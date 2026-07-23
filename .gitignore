@@ -1,0 +1,5 @@
+# Large real test data (not for version control)
+test_data/
+
+# esgprep artifacts
+**/.esgprep_failed.txt
