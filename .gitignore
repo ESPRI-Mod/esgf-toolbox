@@ -3,3 +3,10 @@ test_data/
 
 # esgprep artifacts
 **/.esgprep_failed.txt
+
+# Personal notes (keep only todo.md)
+md_dir/*
+!md_dir/todo.md
+
+# Docker export
+*.tar.gz

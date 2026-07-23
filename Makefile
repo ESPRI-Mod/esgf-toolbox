@@ -1,9 +1,7 @@
-IMAGE_NAME    := wcrp-tools
+IMAGE_NAME    := esgf-toolbox
 ARCHIVE       := $(IMAGE_NAME).tar.gz
-CLUSTER_HOST  := <user>@<host>
-REMOTE_PATH   := ~/
 
-.PHONY: build test run save transfer help
+.PHONY: build test run save help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-10s %s\n", $$1, $$2}'
@@ -43,8 +41,3 @@ endif
 save: ## Export image to compressed tar archive
 	docker save $(IMAGE_NAME) | gzip > $(ARCHIVE)
 	@echo "Saved to $(ARCHIVE) ($$(du -h $(ARCHIVE) | cut -f1))"
-
-transfer: save ## Save + scp to cluster
-	scp $(ARCHIVE) $(CLUSTER_HOST):$(REMOTE_PATH)
-	@echo "Transferred. On the cluster run:"
-	@echo "  pcocc-rs image import docker-archive:$(REMOTE_PATH)$(ARCHIVE) $(IMAGE_NAME)"
