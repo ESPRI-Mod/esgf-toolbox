@@ -16,7 +16,8 @@ RUN uv init --no-readme && \
     uv add esgvoc esgprep cc-plugin-wcrp cmip7-repack && \
     uv add pyudunits2
 
-# Pre-download esgvoc controlled vocabularies
+# Pre-download esgvoc controlled vocabularies into a fixed path
+ENV ESGVOC_HOME=/app/esgvoc_data
 RUN uv run esgvoc use cmip7@latest && \
     uv run esgvoc use cmip6@latest && \
     uv run esgvoc use cordex-cmip6@latest && \
@@ -42,10 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app /app
-COPY --from=builder /root/.local/share/esgvoc /root/.local/share/esgvoc
 
 WORKDIR /app
 ENV USER=root
+ENV ESGVOC_HOME=/app/esgvoc_data
 ENV PATH="/app/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/.venv"
 
