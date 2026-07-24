@@ -28,6 +28,7 @@ done
 DATA=${DATA:-/data}
 failures=0
 
+rm -rf /tmp/drs /tmp/mapfiles /tmp/*_in
 mkdir -p /tmp/drs /tmp/mapfiles
 
 for proj_dir in "$DATA"/*/; do
