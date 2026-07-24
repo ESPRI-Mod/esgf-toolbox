@@ -99,7 +99,9 @@ pcocc-rs image import docker-archive:esgf-toolbox.tar.gz esgf-toolbox
 podman load -i esgf-toolbox.tar.gz
 ```
 
-## Golden test files
+## Test files
+
+### Golden files
 
 The `tests/golden/` directory contains small synthetic netCDF files (one per project, ~40-55 KB each) subsetted from real data. They are used by `make test` to validate the full pipeline inside the container.
 
@@ -111,6 +113,23 @@ docker run --rm \
   -v $(pwd)/tests:/tests \
   esgf-toolbox python /tests/generate_golden.py
 ```
+
+### Broken variants
+
+The `tests/broken/` directory contains intentionally broken netCDF files to test failure paths and understand how the tools behave with bad input. Generate them with:
+
+```bash
+uvx --from netCDF4 python tests/generate_broken.py
+```
+
+Key finding: **esgdrs cross-references the filename and global attributes**. When one is wrong, it falls back to the other. QA/QC (compliance-checker) is the real gatekeeper — it catches issues in all cases.
+
+| Category | QA/QC | esgdrs | Example |
+|---|---|---|---|
+| Wrong attribute only | Catches it | **Succeeds** (uses filename) | `source_id` attr set to `FAKE-MODEL-999`, filename unchanged |
+| Wrong filename only | Catches it | **Succeeds** (uses attributes) | File renamed with wrong `source_id`, attribute unchanged |
+| Both wrong | Catches it | **Fails** (SKIPPED) | Both filename and attribute have wrong `source_id` |
+| Corrupted file | Crashes | **Fails** (InvalidNetCDF) | Truncated file, non-netCDF file |
 
 ## Known limitations
 

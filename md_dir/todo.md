@@ -1,13 +1,23 @@
 # TODO
 
-- [ ] Once the image is validated, add convenience build/transfer tooling (Makefile or shell script) with:
-  - `build` — `docker build`
-  - `run` — run image locally with mounted data directory for testing
-  - `transfer` — `docker save` + `scp` to cluster + print `pcocc-rs image import` command
+## Done
 
-- [ ] Add cmip7_repack + HDF5 CLI tools to the Dockerfile
-- [ ] Test pipeline with real data (CMIP6, CMIP7, CORDEX-CMIP6) — discover what works/fails
-- [ ] Once we know what "golden" looks like, create small synthetic test files (subset: tiny grid, 1-2 timesteps)
-- [ ] Build broken variants from golden files to test failure paths (QA/QC, repack, esgdrs, esgmapfile)
-- [ ] Publishing step NOT on cluster — separate VM handles that
-- [ ] CORDEX compliance-checker downloads CMOR tables from GitHub at runtime (via pooch) — will not work on the air-gapped cluster. Needs an offline mode in cc-plugin-wcrp (skip download when tables already exist locally, or add --offline flag). Flag to plugin maintainers.
+- [x] Build Docker image with all tools (esgvoc, esgprep, cc-plugin-wcrp, cmip7-repack, pyudunits2, HDF5 CLI)
+- [x] Multi-stage build + slim variant
+- [x] Makefile (build, test, run, save)
+- [x] Test pipeline with golden files (CMIP6, CMIP7, CORDEX-CMIP6) — validated locally and on TGCC
+- [x] Synthetic golden test files in repo
+- [x] `--offline` flag for air-gapped cluster (skips CORDEX QA/QC)
+- [x] Fix ESGVOC_HOME for pcocc-rs (non-root user)
+- [x] Push to GitHub (ESPRI-Mod/esgf-toolbox)
+
+- [x] Broken test variants (12 files) testing esgdrs fallback behavior:
+  - Wrong attribute only → esgdrs succeeds (falls back to filename)
+  - Wrong filename only → esgdrs succeeds (falls back to attributes)
+  - Both wrong → esgdrs fails
+  - Corrupted files → esgdrs fails
+
+## Remaining
+
+- [ ] Publishing step on ESGF VM (separate from cluster) — mapfile path rewriting (TGCC → VM), STAC publisher, dry-run validation against esgvoc JSON schema
+- [ ] Flag CORDEX offline issue to cc-plugin-wcrp maintainers (pooch downloads CMOR tables at runtime, no offline fallback)
