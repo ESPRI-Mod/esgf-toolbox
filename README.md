@@ -13,6 +13,27 @@ Docker image bundling ESGF climate data tools for pre-publication workflows. Des
 
 Pre-installed vocabulary snapshots: `cmip7@latest`, `cmip6@latest`, `cordex-cmip6@latest`, `universe@latest`.
 
+## Image variants
+
+Two Dockerfiles are provided:
+
+| Variant | Dockerfile | Compressed | Description |
+|---|---|---|---|
+| `latest` | `Dockerfile` | ~164 MB | Full image with `uv` package manager and all build-time dependencies (sympy, mpmath, etc.). Use this if you need to install additional Python packages inside the container. |
+| `slim` | `Dockerfile.slim` | ~128 MB | Stripped-down runtime image. No `uv`, no `__pycache__`, no test suites, sympy/mpmath removed. Tools are available directly on `$PATH` via an activated venv. Use this for production deployment. |
+
+Both variants include the same ESGF tools and pre-downloaded vocabularies.
+
+Build either with:
+
+```bash
+# latest (default)
+make build
+
+# slim
+docker build -f Dockerfile.slim -t esgf-toolbox:slim .
+```
+
 ## Quick start
 
 ```bash
