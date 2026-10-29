@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 RUN uv init --no-readme && \
-    uv add esgvoc esgprep cc-plugin-wcrp cmip7-repack esgf-qa && \
+    uv add esgvoc esgprep "cc-plugin-wcrp==2.4.0b2" cmip7-repack esgf-qa && \
     uv add pyudunits2
 
 # Pre-download esgvoc controlled vocabularies into a fixed path
