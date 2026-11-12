@@ -100,7 +100,7 @@ code. A `start` record is written before the command, so a run killed by a job t
 # Build the image
 make build
 
-# Check the version manifest, then run the test pipeline (QA/QC + esgdrs + esgmapfile) on golden files
+# Check the manifest and etb, run the test pipeline (QA/QC + esgdrs + esgmapfile), then QA -> fix -> QA
 make test
 
 # Unit tests of the toolbox scripts, on the host (no image needed)
@@ -179,6 +179,23 @@ docker run --rm \
   -v $(pwd)/test_data:/test_data \
   -v $(pwd)/tests:/tests \
   esgf-toolbox python /tests/generate_golden.py
+```
+
+### QA → fix → QA
+
+`tests/run_qa_fix_loop.sh` (part of `make test`) runs one full fix iteration on a copy of the CMIP7 golden file,
+offline, with every step recorded by `etb run`: esgqa, `esgf-fix-tool classify`, `plan`, `apply`, esgqa again,
+`classify` again. The golden file has findings esgf-fix-tool can fix (e.g. `history` on the data variable) and some it
+cannot (repacking, review rules). The test fails if any finding with an implemented fix is still reported after
+`apply`, or if any new finding appears.
+
+```text
+severity  outcome      before  after
+       3  fix               3      0
+       3  unknown           3      3
+       2  fix               2      0
+       ...
+QA -> fix -> QA passed: every fixable finding is gone, nothing new appeared.
 ```
 
 ### Broken variants
