@@ -10,29 +10,31 @@ Docker image bundling ESGF climate data tools for pre-publication workflows. Des
 | [esgprep](https://github.com/ESGF/esgf-prepare) (esgdrs + esgmapfile) | Organize files into DRS directory trees and generate ESGF mapfiles |
 | [cmip7-repack](https://github.com/WCRP-CMIP/cmip7-repack) | Rechunk and compress CMIP7 netCDF4 files to meet packing requirements |
 | [esgvoc](https://github.com/ESPRI-Mod/esgvoc) | ESGF controlled vocabularies (pre-downloaded for offline use) |
+| [esgf-qa](https://pypi.org/project/esgf-qa/) (esgqa) | Run compliance-checker QA over a whole directory tree, with parallel runs and resumable results |
 
-Pre-installed vocabulary snapshots: `cmip7@latest`, `cmip6@latest`, `cordex-cmip6@latest`, `universe@latest`.
+Pre-installed vocabulary snapshots: `universe@latest`, `cmip6@latest`, `cmip6plus@latest`, `cmip7@latest`, `cordex-cmip6@latest`.
+
+The latest CF Standard Name Table is downloaded at build time to `/opt/cf/cf-standard-name-table.xml` (`$CF_STANDARD_NAME_TABLE`).
 
 ## Image variants
 
-Two Dockerfiles are provided:
+A single `Dockerfile` builds both variants as separate targets, so they always ship the same tools and vocabularies.
 
-| Variant | Dockerfile | Compressed | Description |
-|---|---|---|---|
-| `latest` | `Dockerfile` | ~164 MB | Full image with `uv` package manager and all build-time dependencies (sympy, mpmath, etc.). Use this if you need to install additional Python packages inside the container. |
-| `slim` | `Dockerfile.slim` | ~128 MB | Stripped-down runtime image. No `uv`, no `__pycache__`, no test suites, sympy/mpmath removed. Tools are available directly on `$PATH` via an activated venv. Use this for production deployment. |
+| Variant | Target | Compressed (`make save`) | Uncompressed (`docker images`) | Description |
+|---|---|---|---|---|
+| `latest` | `latest` (default) | ~161 MB | ~549 MB | Includes the `uv` package manager. Use this if you need to install additional Python packages inside the container. |
+| `slim` | `slim` | ~141 MB | ~498 MB | No `uv`, no `__pycache__`, no type stubs. Use this for production deployment. |
 
-Both variants include the same ESGF tools and pre-downloaded vocabularies.
+Both variants drop the test suites bundled inside Python packages. Tools are available directly on `$PATH` via the activated venv.
 
 Build either with:
 
 ```bash
-# latest (default)
-make build
-
-# slim
-docker build -f Dockerfile.slim -t esgf-toolbox:slim .
+make build                  # latest
+make build VARIANT=slim     # slim
 ```
+
+`VARIANT` also applies to `make test`, `make run` and `make save`.
 
 ## Quick start
 
@@ -82,8 +84,8 @@ Supported projects: **CMIP7**, **CMIP6**, **CORDEX-CMIP6**.
 
 ```bash
 # Export the image as a compressed tar archive
-make save
-# produces esgf-toolbox.tar.gz
+make save                   # produces esgf-toolbox.tar.gz
+make save VARIANT=slim      # produces esgf-toolbox-slim.tar.gz
 ```
 
 Then transfer to your cluster and import using your container runtime:
