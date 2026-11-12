@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/app/.venv/bin/python
 """Versions of everything inside the esgf-toolbox image.
 
     esgf-toolbox-versions            show the build-time manifest
