@@ -6,7 +6,7 @@ ARCHIVE       := $(ARCHIVE_BASE).tar.gz
 BUILD_COMMIT  := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
 BUILD_DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-.PHONY: build test run save versions help
+.PHONY: build test unit run save versions help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-10s %s\n", $$1, $$2}'
@@ -18,8 +18,12 @@ build: ## Build the Docker image (VARIANT=latest|slim)
 versions: ## Show what the image contains (tools, vocabularies, CF table, system)
 	docker run --rm $(IMAGE) esgf-toolbox-versions
 
-test: ## Run golden file pipeline (QA/QC + esgdrs + esgmapfile) in container
+test: ## In the container: check the version manifest, then run the golden file pipeline (QA/QC + esgdrs + esgmapfile)
+	docker run --rm $(IMAGE) esgf-toolbox-versions --live
 	docker run --rm -v $(CURDIR)/tests:/tests -v $(CURDIR)/tests/golden:/data $(IMAGE) bash /tests/run_pipeline.sh
+
+unit: ## Unit tests of the toolbox scripts, on the host (no image needed)
+	uvx --python 3.12 pytest -q tests/test_versions.py
 
 run: ## Run interactive shell with data: make run DATA=/path/to/files
 ifndef DATA

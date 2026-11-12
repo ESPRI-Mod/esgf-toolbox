@@ -58,9 +58,13 @@ def _cf_table() -> dict:
 
 
 def _system() -> dict:
-    result = subprocess.run(["dpkg-query", "-W", "-f", "${Package} ${Version}\n", *SYSTEM_PACKAGES],
-                            capture_output=True, text=True, check=False)
-    packages = dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
+    try:
+        result = subprocess.run(["dpkg-query", "-W", "-f", "${Package} ${Version}\n", *SYSTEM_PACKAGES],
+                                capture_output=True, text=True, check=False)
+        output = result.stdout
+    except FileNotFoundError:  # not a Debian system
+        output = ""
+    packages = dict(line.split(" ", 1) for line in output.splitlines() if " " in line)
     debian = Path("/etc/debian_version")
     return {"debian": debian.read_text().strip() if debian.is_file() else None,
             "python": platform.python_version(),

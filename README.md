@@ -72,8 +72,11 @@ git commit and build date are recorded alongside, and as OCI labels (`docker ins
 # Build the image
 make build
 
-# Run the test pipeline (QA/QC + esgdrs + esgmapfile) on golden files
+# Check the version manifest, then run the test pipeline (QA/QC + esgdrs + esgmapfile) on golden files
 make test
+
+# Unit tests of the toolbox scripts, on the host (no image needed)
+make unit
 
 # Interactive shell with your data mounted at /data
 make run DATA=/path/to/netcdf/files

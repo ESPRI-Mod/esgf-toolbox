@@ -13,3 +13,6 @@ md_dir/*
 *.tar
 *.versions.json
 *.uv.lock
+
+# Python caches (unit tests)
+__pycache__/
