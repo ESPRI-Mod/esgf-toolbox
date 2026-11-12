@@ -31,7 +31,17 @@ RUN uv run esgvoc use universe@latest && \
     uv run esgvoc use cmip6@latest && \
     uv run esgvoc use cmip6plus@latest && \
     uv run esgvoc use cmip7@latest && \
-    uv run esgvoc use cordex-cmip6@latest
+    uv run esgvoc use cordex-cmip6@latest && \
+    chmod -R a+rX "$ESGVOC_HOME"   # esgvoc writes its databases 0600: make them readable by non-root users (pcocc-rs)
+
+# esgf-fix-tool is released on GitHub, not PyPI: install its release wheel.
+# `make build` resolves the latest tag on the host and passes it, so a new release invalidates this layer.
+ARG ESGF_FIX_TOOL_VERSION=latest
+RUN tag="${ESGF_FIX_TOOL_VERSION}" && \
+    if [ "$tag" = latest ]; then \
+      tag=$(python -c 'import json, urllib.request; print(json.load(urllib.request.urlopen("https://api.github.com/repos/ESPRI-Mod/esgf-fix-tool/releases/latest"))["tag_name"])'); \
+    fi && \
+    uv add "esgf-fix-tool @ https://github.com/ESPRI-Mod/esgf-fix-tool/releases/download/${tag}/esgf_fix_tool-${tag#v}-py3-none-any.whl"
 
 # --- Trim for both variants: bundled test suites are never run here (~45 MB) ---
 # sympy/mpmath stay: pyudunits2 imports sympy at runtime for unit parsing.

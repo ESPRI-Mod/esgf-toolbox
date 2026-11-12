@@ -24,8 +24,8 @@ from importlib.metadata import PackageNotFoundError, distributions, version
 from pathlib import Path
 
 MANIFEST = Path(os.environ.get("ESGF_TOOLBOX_MANIFEST", "/app/VERSIONS.json"))
-TOOLS = ["esgvoc", "esgprep", "compliance-checker", "cc-plugin-wcrp", "cmip7-repack", "esgf-qa", "pyudunits2",
-         "netCDF4"]
+TOOLS = ["esgvoc", "esgprep", "compliance-checker", "cc-plugin-wcrp", "cmip7-repack", "esgf-qa", "esgf-fix-tool",
+         "pyudunits2", "netCDF4"]
 SYSTEM_PACKAGES = ["libnetcdf22", "libhdf5-310", "libudunits2-0", "hdf5-tools"]
 SECTIONS = ["tools", "vocabularies", "cf_standard_name_table", "system", "python_packages"]
 
