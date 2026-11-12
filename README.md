@@ -11,8 +11,12 @@ Docker image bundling ESGF climate data tools for pre-publication workflows. Des
 | [cmip7-repack](https://github.com/WCRP-CMIP/cmip7-repack) | Rechunk and compress CMIP7 netCDF4 files to meet packing requirements |
 | [esgvoc](https://github.com/ESPRI-Mod/esgvoc) | ESGF controlled vocabularies (pre-downloaded for offline use) |
 | [esgf-qa](https://pypi.org/project/esgf-qa/) (esgqa) | Run compliance-checker QA over a whole directory tree, with parallel runs and resumable results |
+| [esgf-fix-tool](https://github.com/ESPRI-Mod/esgf-fix-tool) | Fix CMIP7 files from an esgqa report with reviewed rules (classify → plan → apply) |
 
 Pre-installed vocabulary snapshots: `universe@latest`, `cmip6@latest`, `cmip6plus@latest`, `cmip7@latest`, `cordex-cmip6@latest`.
+
+esgf-fix-tool is installed from the wheel of its latest [GitHub release](https://github.com/ESPRI-Mod/esgf-fix-tool/releases)
+(`make build ESGF_FIX_TOOL_VERSION=v0.1.0` to choose one).
 
 The latest CF Standard Name Table is downloaded at build time to `/opt/cf/cf-standard-name-table.xml` (`$CF_STANDARD_NAME_TABLE`).
 
