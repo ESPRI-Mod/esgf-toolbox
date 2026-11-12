@@ -78,6 +78,16 @@ ENV CF_STANDARD_NAME_TABLE=/opt/cf/cf-standard-name-table.xml
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"
 
+# Records what this build installed: esgf-toolbox-versions (see toolbox/versions.py)
+COPY --chmod=755 toolbox/versions.py /usr/local/bin/esgf-toolbox-versions
+
+# Passed by `make build`; they only label the build and never change what is installed.
+ARG BUILD_COMMIT=
+ARG BUILD_DATE=
+LABEL org.opencontainers.image.source="https://github.com/ESPRI-Mod/esgf-toolbox" \
+      org.opencontainers.image.revision="${BUILD_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
 ENTRYPOINT []
 CMD ["/bin/bash"]
 
@@ -85,9 +95,13 @@ CMD ["/bin/bash"]
 FROM runtime AS slim
 
 COPY --from=app-slim /app /app
+ARG BUILD_COMMIT= BUILD_DATE=
+RUN BUILD_VARIANT=slim BUILD_COMMIT="${BUILD_COMMIT}" BUILD_DATE="${BUILD_DATE}" esgf-toolbox-versions collect
 
 # --- latest: adds uv to install extra packages in the container (default target) ---
 FROM runtime AS latest
 
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=app /app /app
+ARG BUILD_COMMIT= BUILD_DATE=
+RUN BUILD_VARIANT=latest BUILD_COMMIT="${BUILD_COMMIT}" BUILD_DATE="${BUILD_DATE}" esgf-toolbox-versions collect

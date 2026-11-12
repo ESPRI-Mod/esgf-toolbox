@@ -36,6 +36,36 @@ make build VARIANT=slim     # slim
 
 `VARIANT` also applies to `make test`, `make run` and `make save`.
 
+## What's inside a build
+
+Every build installs the **latest** release of each tool, vocabulary and the CF table; nothing is pinned. The build
+records what it got in `/app/VERSIONS.json`:
+
+```bash
+make versions                                     # from the host
+esgf-toolbox-versions                             # inside the container
+esgf-toolbox-versions --json                      # full manifest, including every Python package
+esgf-toolbox-versions --live                      # compare with what is installed now (exit 1 on drift)
+```
+
+```text
+esgf-toolbox  build_id 03c6932c11fe  variant slim  commit 5341c26  built 2026-11-12T10:29:13Z
+
+Tools
+  esgvoc               7.2.0
+  cc-plugin-wcrp       2.4.0b3
+  ...
+Controlled vocabularies (esgvoc)
+  cmip7                2.5.6  (registry)
+  ...
+CF standard name table  version 95  (2026-09-16T04:56:46Z)
+```
+
+The manifest covers the main tools, all Python packages, the esgvoc vocabularies (version and checksum), the CF
+standard name table, and the system netCDF/HDF5/udunits libraries. `build_id` is a hash of those contents only:
+two builds with the same `build_id` contain the same versions, and a new `build_id` means something changed. The
+git commit and build date are recorded alongside, and as OCI labels (`docker inspect`).
+
 ## Quick start
 
 ```bash
@@ -88,6 +118,10 @@ make save                   # produces esgf-toolbox.tar.gz
 make save VARIANT=slim      # produces esgf-toolbox-slim.tar.gz
 ```
 
+`make save` also writes the build's manifest and lockfile next to the archive (`esgf-toolbox.versions.json`,
+`esgf-toolbox.uv.lock`). Keep them with any image you deploy: they record exactly what the image contains, and the
+lockfile is what a future build would need to reproduce it.
+
 Then transfer to your cluster and import using your container runtime:
 
 ```bash
@@ -136,4 +170,4 @@ Key finding: **esgdrs cross-references the filename and global attributes**. Whe
 ## Known limitations
 
 - **CORDEX compliance-checker requires network access**: the `wcrp_cordex_cmip6` checker downloads CMOR tables from GitHub at runtime via `pooch`. This will not work on air-gapped clusters. The esgdrs and esgmapfile steps work fully offline.
-- **Vocabulary updates**: to get the latest controlled vocabularies, rebuild the image (`make build`). The esgvoc snapshots are baked into the image at build time.
+- **Vocabulary updates**: to get the latest controlled vocabularies, rebuild the image (`make build`). The esgvoc snapshots are baked into the image at build time; `esgf-toolbox-versions` shows which ones.

@@ -11,3 +11,5 @@ md_dir/*
 # Docker export
 *.tar.gz
 *.tar
+*.versions.json
+*.uv.lock
