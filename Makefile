@@ -24,12 +24,13 @@ versions: ## Show what the image contains (tools, vocabularies, CF table, system
 	docker run --rm $(IMAGE) esgf-toolbox-versions
 
 test: ## In the container, as your own user (like pcocc-rs): manifest, esgf-fix-tool, then the golden pipeline
-	docker run --rm $(AS_USER) $(IMAGE) esgf-toolbox-versions --live
+	docker run --rm $(AS_USER) $(IMAGE) etb versions --live
+	docker run --rm $(AS_USER) $(IMAGE) sh -c 'cd /tmp && etb run -- true && etb log'
 	docker run --rm $(AS_USER) $(IMAGE) sh -c 'echo "{\"fail\": {}}" > /tmp/qa_result_empty.json && esgf-fix-tool classify /tmp/qa_result_empty.json'
 	docker run --rm $(AS_USER) -v $(CURDIR)/tests:/tests -v $(CURDIR)/tests/golden:/data $(IMAGE) bash /tests/run_pipeline.sh
 
 unit: ## Unit tests of the toolbox scripts, on the host (no image needed)
-	uvx --python 3.12 pytest -q tests/test_versions.py
+	uvx --python 3.12 --with typer pytest -q tests/test_versions.py tests/test_etb.py
 
 run: ## Run interactive shell with data: make run DATA=/path/to/files
 ifndef DATA

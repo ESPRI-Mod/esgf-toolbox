@@ -70,6 +70,30 @@ standard name table, and the system netCDF/HDF5/udunits libraries. `build_id` is
 two builds with the same `build_id` contain the same versions, and a new `build_id` means something changed. The
 git commit and build date are recorded alongside, and as OCI labels (`docker inspect`).
 
+## Run log (`etb`)
+
+`etb` keeps a record of what was run with the image, to be able to tell later what was done, with which versions:
+
+```bash
+etb run --note "QA iteration 1" -- esgqa -o qa_out /data      # run any tool through etb
+etb run -- esgf-fix-tool classify qa_out/qa_result_*.json
+etb log                                                        # what was run here
+etb log --json                                                 # one JSON object per run
+etb versions                                                   # same as esgf-toolbox-versions
+```
+
+```text
+e758fd3fa608  2026-11-12T11:06:37+00:00  nonzero       exit 20      1s  build b869d957a5e5  esgf-fix-tool classify ...
+e97fa5e52128  2026-11-12T11:06:38+00:00  ok            exit 0       2s  build b869d957a5e5  esgdrs --help
+```
+
+Each run appends to `./etb-runs.jsonl` in the working directory (`--log PATH` or `$ETB_LOG` to change it; it must be
+on a mounted volume to outlive the container). A run records its command line, working directory, user, host, the
+package and version providing the command, the image `build_id` (which links to `etb versions`), timings and exit
+code. A `start` record is written before the command, so a run killed by a job time limit still leaves a trace
+(`no_end_record`). `etb run` exits with the command's own exit code, so scripts can keep using it, and passes
+`ETB_RUN_ID` to the command. If the log cannot be written, nothing is run.
+
 ## Quick start
 
 ```bash

@@ -1,0 +1,10 @@
+# Keep the build context small: only the Dockerfile and toolbox/ are used.
+*.tar
+*.tar.gz
+*.versions.json
+*.uv.lock
+**/__pycache__
+.pytest_cache
+.git
+md_dir
+tests
