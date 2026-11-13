@@ -116,6 +116,13 @@ etb done "$SIMU" published > /dev/null || fail "etb done published"
 TODO=$(etb todo "$SIMU" --json)
 check "etb todo: published, source removable 2 months later" bash -c \
     "[ '$(echo "$TODO" | milestone milestone)' = published ] && [ '$(echo "$TODO" | milestone src_removable_from)' = '$(in_two_months)' ]"
+check "etb todo: no warning, every milestone has its command in the log" \
+    test "$(echo "$TODO" | milestone warnings)" = "[]"
+# A milestone recorded without its command must be flagged, or a broken check would pass silently.
+etb copy "$DATA/CMIP7" "$ROOT/work/SIM02" > /dev/null || fail "etb copy SIM02"
+etb done SIM02 fixed > /dev/null 2>&1 || fail "etb done SIM02 fixed"
+check "etb todo warns about a milestone without its command" \
+    grep -q "fixed without a successful esgf-fix-tool apply" <(etb todo SIM02)
 
 step "new version: fix WORK without touching the published file"
 python3 - "$WORK_FILE" "$RUN/fixplan_v2.json" <<'EOF'
