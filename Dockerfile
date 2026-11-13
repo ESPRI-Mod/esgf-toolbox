@@ -22,7 +22,7 @@ WORKDIR /app
 
 RUN uv init --no-readme && \
     uv add esgvoc esgprep "cc-plugin-wcrp==2.4.0b3" cmip7-repack esgf-qa && \
-    uv add pyudunits2
+    uv add pyudunits2 typer
 
 # Pre-download esgvoc controlled vocabularies into a fixed path
 ENV ESGVOC_HOME=/app/esgvoc_data
@@ -88,8 +88,10 @@ ENV CF_STANDARD_NAME_TABLE=/opt/cf/cf-standard-name-table.xml
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"
 
-# Records what this build installed: esgf-toolbox-versions (see toolbox/versions.py)
-COPY --chmod=755 toolbox/versions.py /usr/local/bin/esgf-toolbox-versions
+# etb (versions, run log) and esgf-toolbox-versions: see toolbox/
+COPY --chmod=755 toolbox/ /opt/esgf-toolbox/
+RUN ln -s /opt/esgf-toolbox/etb.py /usr/local/bin/etb && \
+    ln -s /opt/esgf-toolbox/versions.py /usr/local/bin/esgf-toolbox-versions
 
 # Passed by `make build`; they only label the build and never change what is installed.
 ARG BUILD_COMMIT=
