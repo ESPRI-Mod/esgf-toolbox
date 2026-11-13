@@ -42,8 +42,11 @@ make build VARIANT=slim     # slim
 
 ## What's inside a build
 
-Every build installs the **latest** release of each tool, vocabulary and the CF table; nothing is pinned. The build
-records what it got in `/app/VERSIONS.json`:
+Every build installs the **latest** release of each tool, vocabulary and the CF table; nothing is pinned. Docker
+reuses cached layers from earlier builds, though: a plain `make build` only re-resolves what changed (for example a
+new esgf-fix-tool release). Use `make build FRESH=1` to rebuild every layer and get the latest of everything.
+
+The build records what it got in `/app/VERSIONS.json`:
 
 ```bash
 make versions                                     # from the host
