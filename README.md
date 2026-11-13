@@ -106,7 +106,7 @@ make build
 # Check the manifest and etb, run the test pipeline (QA/QC + esgdrs + esgmapfile), then QA -> fix -> QA
 make test
 
-# Unit tests of the toolbox scripts, on the host (no image needed)
+# Unit tests of the toolbox scripts, on the host (no image needed; also run by CI on every PR)
 make unit
 
 # Interactive shell with your data mounted at /data
