@@ -242,7 +242,8 @@ def test_todo_shows_each_simulation_and_the_source_removal_date(tmp_path, monkey
     milestone_line(log, "SIM02", "copied", "2026-11-12", src="/ccc/work/src/SIM02")
     milestone_line(log, "SIM03", "published", "2026-08-31")
     monkeypatch.setattr(etb, "_today", lambda: etb.date(2026, 11, 13))
-    out = runner.invoke(etb.app, ["todo", "--log", str(log)]).output.splitlines()
+    out = [line for line in runner.invoke(etb.app, ["todo", "--log", str(log)]).output.splitlines()
+           if not line.startswith(" ")]  # warning lines are indented (no commands in this log)
     assert len(out) == 3
     assert "SIM01" in out[0] and "published" in out[0] and "from 2027-01-10 (in 58 days)" in out[0]
     assert "SIM02" in out[1] and "copied" in out[1] and "QA -> fix loop" in out[1]
@@ -272,3 +273,61 @@ def test_user_comes_from_etb_user_when_set(tmp_path, manifest, monkeypatch):
     runner.invoke(etb.app, ["done", "SIM01", "fixed", "--log", str(log)])
     run(log, "true")
     assert {r["user"] for r in records(log) if "user" in r} == {"ltroussellier"}
+
+
+def run_line(log, day, argv, exit_code=0, run_id=None):
+    run_id = run_id or f"r{abs(hash((day, tuple(argv)))) % 10**10:010d}"
+    with log.open("a") as out:
+        out.write(json.dumps({"run_id": run_id, "time": f"{day}T09:00:00+00:00", "event": "start", "argv": argv}) + "\n")
+        out.write(json.dumps({"run_id": run_id, "time": f"{day}T09:30:00+00:00", "event": "end",
+                              "status": "ok" if exit_code == 0 else "nonzero", "exit_code": exit_code}) + "\n")
+
+
+def todo_json(log, simu):
+    return json.loads(runner.invoke(etb.app, ["todo", simu, "--log", str(log), "--json"]).output)
+
+
+def test_todo_has_no_warning_when_each_milestone_has_its_command(tmp_path):
+    log, work = tmp_path / "runs.jsonl", "/ccc/work/cmip7/work/SIM01"
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src="/ccc/src/SIM01", work=work)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "apply", "p.json", "--only-under", work])
+    milestone_line(log, "SIM01", "fixed", "2026-11-03")
+    run_line(log, "2026-11-04", ["/app/.venv/bin/esgdrs", "make", "upgrade", "-p", "cmip7", "--link", work])
+    milestone_line(log, "SIM01", "linked", "2026-11-05")
+    run_line(log, "2026-11-06", ["esgmapfile", "make", "-p", "cmip7", "--directory", "/ccc/drs/MIP-DRS7"])
+    milestone_line(log, "SIM01", "published", "2026-11-07")
+    assert todo_json(log, "SIM01")["warnings"] == []
+
+
+def test_todo_warns_about_milestones_without_their_command(tmp_path):
+    log, work = tmp_path / "runs.jsonl", "/ccc/work/cmip7/work/SIM01"
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src="/ccc/src/SIM01", work=work)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "apply", "p.json", "--only-under", work, "--dry-run"])  # dry run
+    milestone_line(log, "SIM01", "fixed", "2026-11-03")
+    run_line(log, "2026-11-04", ["esgdrs", "make", "upgrade", "-p", "cmip7", work])                       # no --link
+    run_line(log, "2026-11-04", ["esgdrs", "make", "upgrade", "-p", "cmip7", "--link", "/other/SIM02"])   # other simu
+    milestone_line(log, "SIM01", "linked", "2026-11-05")
+    run_line(log, "2026-11-06", ["esgmapfile", "make", "-p", "cmip7"], exit_code=1)                       # failed
+    milestone_line(log, "SIM01", "published", "2026-11-07")
+    run_line(log, "2026-11-08", ["esgmapfile", "make", "-p", "cmip7"])                                     # too late
+    assert todo_json(log, "SIM01")["warnings"] == [
+        f"fixed without a successful esgf-fix-tool apply on {work} in the log",
+        f"linked without a successful esgdrs make upgrade --link on {work} in the log",
+        "published without a successful esgmapfile make in the log",
+    ]
+    text = runner.invoke(etb.app, ["todo", "--log", str(log)]).output
+    assert text.count("warning:") == 3
+
+
+def test_todo_warnings_end_to_end_with_etb_run(tmp_path, manifest):
+    """etb run records the commands; a fake esgdrs stands for the real one."""
+    log, work = tmp_path / "runs.jsonl", tmp_path / "work" / "SIM01"
+    src = simulation(tmp_path / "src")
+    runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log)])
+    runner.invoke(etb.app, ["done", "SIM01", "fixed", "--log", str(log)])
+    bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+    (bin_dir / "esgdrs").write_text("#!/bin/sh\nexit 0\n"); (bin_dir / "esgdrs").chmod(0o755)
+    run(log, str(bin_dir / "esgdrs"), "make", "upgrade", "-p", "cmip7", "--link", str(work))
+    runner.invoke(etb.app, ["done", "SIM01", "linked", "--log", str(log)])
+    assert todo_json(log, "SIM01")["warnings"] == [
+        f"fixed without a successful esgf-fix-tool apply on {work.resolve()} in the log"]
