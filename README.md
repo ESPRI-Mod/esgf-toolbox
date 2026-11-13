@@ -128,7 +128,7 @@ interrupted copy never leaves a truncated file. Running it again on a copied sim
 # Build the image
 make build
 
-# Check the manifest and etb, run the test pipeline (QA/QC + esgdrs + esgmapfile), then QA -> fix -> QA
+# Check the manifest and etb, run the test pipeline (QA/QC + esgdrs + esgmapfile), then the operator workflow
 make test
 
 # Unit tests of the toolbox scripts, on the host (no image needed; also run by CI on every PR)
@@ -209,22 +209,24 @@ docker run --rm \
   esgf-toolbox python /tests/generate_golden.py
 ```
 
-### QA → fix → QA
+### Workflow test
 
-`tests/run_qa_fix_loop.sh` (part of `make test`) runs one full fix iteration on a copy of the CMIP7 golden file,
-offline, with every step recorded by `etb run`: esgqa, `esgf-fix-tool classify`, `plan`, `apply`, esgqa again,
-`classify` again. The golden file has findings esgf-fix-tool can fix (e.g. `history` on the data variable) and some it
-cannot (repacking, review rules). The test fails if any finding with an implemented fix is still reported after
-`apply`, or if any new finding appears.
+`tests/run_workflow.sh` (part of `make test`) runs the whole operator workflow on a copy of the CMIP7 golden file,
+offline, every step through `etb` as an operator would, and checks each one:
 
-```text
-severity  outcome      before  after
-       3  fix               3      0
-       3  unknown           3      3
-       2  fix               2      0
-       ...
-QA -> fix -> QA passed: every fixable finding is gone, nothing new appeared.
-```
+| Step | Checked |
+|---|---|
+| `etb copy`, twice | identical copy; the second run says it was already copied and copies nothing |
+| `deduplicate --dry-run` | nothing to delete in the golden file |
+| QA → `plan` → `apply` → QA | every finding with an implemented fix is gone, no new finding; the fixlog has the tool version, rules digest and the `etb_run_id` of the `apply` run |
+| `cmip7repack -o` | files repacked in place, no `*_cmip7repack` copy |
+| `esgdrs make upgrade --link` | `v<VERSION>/` symlinks to `files/d<VERSION>/`, `latest` → `v<VERSION>`, the DRS file **is** the WORK file (2 links) |
+| `esgmapfile` | one mapfile for the version |
+| `etb done` …, `etb todo` | published, source removable 2 months later; done after `src-removed` |
+| new version | `apply` refuses the hard-linked file; with `--break-hardlinks`, WORK gets the fix and the published DRS file is unchanged |
+
+The golden file has findings esgf-fix-tool can fix (e.g. `history` on the data variable) and some it cannot
+(repacking, review rules), so the QA decision stays `new_rule`; the test checks that what can be fixed is fixed.
 
 ### Broken variants
 
