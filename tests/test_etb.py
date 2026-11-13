@@ -151,3 +151,124 @@ def test_versions_delegates_to_the_manifest(manifest, monkeypatch):
     for args in ([], ["--json"], ["--live"]):
         assert runner.invoke(etb.app, ["versions", *args]).exit_code == 0
     assert calls == [[], ["--json"], ["--live"]]
+
+
+# --- etb copy / done / todo (workflow milestones) ---
+
+def simulation(root):
+    """A small simulation tree with ATM/SRF folders, a nested file and a symlink."""
+    for rel, content in (("ATM/Output/ta.nc", b"a" * 10), ("SRF/Output/snc.nc", b"s" * 20), ("readme.txt", b"r")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(content)
+    (root / "link.nc").symlink_to(root / "ATM/Output/ta.nc")
+    return root
+
+
+def milestones(log):
+    return [r for r in records(log) if r["event"] == "milestone"]
+
+
+def test_copy_copies_the_tree_and_records_copied(tmp_path, manifest):
+    src, work, log = simulation(tmp_path / "src"), tmp_path / "work" / "SIM01", tmp_path / "runs.jsonl"
+    result = runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log)])
+    assert result.exit_code == 0, result.output
+    assert (work / "ATM/Output/ta.nc").read_bytes() == b"a" * 10 and (work / "readme.txt").exists()
+    assert not (work / "link.nc").exists() and "1 symlink(s) skipped" in result.output
+    assert not list(work.rglob(".*etb-partial"))
+    (m,) = milestones(log)
+    assert m["simu"] == "SIM01" and m["milestone"] == "copied" and m["src"] == str(src.resolve())
+    assert m["files"] == 3 and m["bytes"] == 31 and m["image"]["build_id"] == "abc123def456"
+
+
+def test_copy_again_keeps_what_is_there_and_says_it_was_done(tmp_path, manifest):
+    src, work, log = simulation(tmp_path / "src"), tmp_path / "work" / "SIM01", tmp_path / "runs.jsonl"
+    runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log)])
+    (work / "readme.txt").unlink()
+    result = runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log)])
+    assert result.exit_code == 0 and "was already copied on" in result.output
+    assert "copied 1 file(s), 2 already there" in result.output and (work / "readme.txt").exists()
+
+
+def test_copy_reports_a_different_file_and_records_nothing(tmp_path, manifest):
+    src, work, log = simulation(tmp_path / "src"), tmp_path / "work" / "SIM01", tmp_path / "runs.jsonl"
+    (work / "ATM/Output").mkdir(parents=True)
+    (work / "ATM/Output/ta.nc").write_bytes(b"truncated")
+    result = runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log)])
+    assert result.exit_code == 1 and "different size in WORK, left alone: ATM/Output/ta.nc" in result.output
+    assert (work / "ATM/Output/ta.nc").read_bytes() == b"truncated"
+    assert not log.exists() or not milestones(log)
+
+
+def test_copy_dry_run_copies_nothing(tmp_path, manifest):
+    src, work, log = simulation(tmp_path / "src"), tmp_path / "work" / "SIM01", tmp_path / "runs.jsonl"
+    result = runner.invoke(etb.app, ["copy", str(src), str(work), "--log", str(log), "--dry-run"])
+    assert result.exit_code == 0 and "would copy 3 file(s)" in result.output
+    assert not work.exists() and not log.exists()
+
+
+def test_copy_refuses_nested_directories(tmp_path, manifest):
+    src = simulation(tmp_path / "src")
+    result = runner.invoke(etb.app, ["copy", str(src), str(src / "copy"), "--log", str(tmp_path / "l.jsonl")])
+    assert result.exit_code == 2 and "must not contain each other" in result.output
+
+
+def test_done_records_milestones_and_warns_about_skipped_ones(tmp_path, manifest):
+    log = tmp_path / "runs.jsonl"
+    result = runner.invoke(etb.app, ["done", "SIM01", "linked", "--log", str(log), "--note", "v20261113"])
+    assert result.exit_code == 0 and "no copied, fixed milestone yet" in result.output
+    (m,) = milestones(log)
+    assert m["milestone"] == "linked" and m["note"] == "v20261113"
+
+
+def test_done_rejects_unknown_milestones_and_copied(tmp_path, manifest):
+    log = tmp_path / "runs.jsonl"
+    for name in ("publishd", "copied"):
+        assert runner.invoke(etb.app, ["done", "SIM01", name, "--log", str(log)]).exit_code == 2
+    assert not log.exists()
+
+
+def milestone_line(log, simu, milestone, day, **extra):
+    with log.open("a") as out:
+        out.write(json.dumps({"event": "milestone", "time": f"{day}T10:00:00+00:00", "simu": simu,
+                              "milestone": milestone, "user": "op", **extra}) + "\n")
+
+
+def test_todo_shows_each_simulation_and_the_source_removal_date(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src="/ccc/work/src/SIM01")
+    milestone_line(log, "SIM01", "fixed", "2026-11-05")
+    milestone_line(log, "SIM01", "linked", "2026-11-06")
+    milestone_line(log, "SIM01", "published", "2026-11-10")
+    milestone_line(log, "SIM02", "copied", "2026-11-12", src="/ccc/work/src/SIM02")
+    milestone_line(log, "SIM03", "published", "2026-08-31")
+    monkeypatch.setattr(etb, "_today", lambda: etb.date(2026, 11, 13))
+    out = runner.invoke(etb.app, ["todo", "--log", str(log)]).output.splitlines()
+    assert len(out) == 3
+    assert "SIM01" in out[0] and "published" in out[0] and "from 2027-01-10 (in 58 days)" in out[0]
+    assert "SIM02" in out[1] and "copied" in out[1] and "QA -> fix loop" in out[1]
+    assert "SIM03" in out[2] and "possible since 2026-10-31" in out[2]   # Aug 31 + 2 months: end of October
+    info = json.loads(runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log), "--json"]).output)
+    assert info["src_removable_from"] == "2027-01-10" and info["src"] == "/ccc/work/src/SIM01"
+
+
+def test_todo_with_nothing_recorded(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    assert "no milestone" in runner.invoke(etb.app, ["todo", "--log", str(log)]).output
+    milestone_line(log, "SIM01", "copied", "2026-11-01")
+    assert "nothing recorded yet" in runner.invoke(etb.app, ["todo", "SIM09", "--log", str(log)]).output
+
+
+def test_run_log_ignores_milestones(tmp_path, manifest):
+    log = tmp_path / "runs.jsonl"
+    run(log, "true")
+    milestone_line(log, "SIM01", "copied", "2026-11-01")
+    runs = [json.loads(line) for line in runner.invoke(etb.app, ["log", "--log", str(log), "--json"]).output.splitlines()]
+    assert len(runs) == 1 and runs[0]["status"] == "ok"
+
+
+def test_user_comes_from_etb_user_when_set(tmp_path, manifest, monkeypatch):
+    monkeypatch.setenv("ETB_USER", "ltroussellier")
+    log = tmp_path / "runs.jsonl"
+    runner.invoke(etb.app, ["done", "SIM01", "fixed", "--log", str(log)])
+    run(log, "true")
+    assert {r["user"] for r in records(log) if "user" in r} == {"ltroussellier"}

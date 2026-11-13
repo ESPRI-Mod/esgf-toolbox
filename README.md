@@ -97,6 +97,31 @@ code. A `start` record is written before the command, so a run killed by a job t
 (`no_end_record`). `etb run` exits with the command's own exit code, so scripts can keep using it, and passes
 `ETB_RUN_ID` to the command. If the log cannot be written, nothing is run.
 
+### Where each simulation stands (`etb copy`, `etb done`, `etb todo`)
+
+The same log records workflow milestones, so the team knows what was already done for each simulation and when
+its source can be removed. Point `$ETB_LOG` at one shared file in the work directory.
+
+```bash
+etb copy $SRC $WORK                 # copy a simulation to the shared work directory -> milestone "copied"
+etb done $SIMU fixed                # QA clean
+etb done $SIMU linked               # hard-linked into the DRS (esgdrs --link)
+etb done $SIMU published
+etb todo                            # every simulation: last milestone, next action, source removal date
+etb done $SIMU src-removed          # after rm -r $SRC
+```
+
+```text
+SIM01      published    2026-11-13   -> rm -r the source possible from 2027-01-13 (in 61 days)
+SIM02      copied       2026-11-12   -> deduplicate ATM/SRF, then QA -> fix loop until classify exits 0 (steps 2-5)
+```
+
+`etb copy` is safe to run again: a file already in WORK with the same size is kept, one with a different size is
+reported and left alone (exit 1, no milestone), and each file is written under a temporary name then renamed, so an
+interrupted copy never leaves a truncated file. Running it again on a copied simulation says who copied it and when.
+`etb todo --months N` changes the delay after publication (default 2 months). Records name the user from
+`$ETB_USER` when set (useful in containers, where the image sets `USER=root`).
+
 ## Quick start
 
 ```bash
