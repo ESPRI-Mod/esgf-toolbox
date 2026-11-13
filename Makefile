@@ -27,13 +27,13 @@ build: ## Build the Docker image (VARIANT=latest|slim, FRESH=1 to ignore the cac
 versions: ## Show what the image contains (tools, vocabularies, CF table, system)
 	docker run --rm $(IMAGE) esgf-toolbox-versions
 
-test: ## In the container, as your own user (like pcocc-rs): manifest, etb, golden pipeline, QA -> fix -> QA
+test: ## In the container, as your own user (like pcocc-rs): manifest, etb, golden pipeline, operator workflow
 	docker run --rm $(AS_USER) $(IMAGE) etb versions --live
 	docker run --rm $(AS_USER) $(IMAGE) sh -c 'cd /tmp && etb run -- true && etb log'
 	docker run --rm $(AS_USER) $(IMAGE) sh -c 'echo "{\"fail\": {}}" > /tmp/qa_result_empty.json && esgf-fix-tool classify /tmp/qa_result_empty.json'
 	docker run --rm $(AS_USER) -v $(CURDIR)/tests:/tests -v $(CURDIR)/tests/golden:/data $(IMAGE) bash /tests/run_pipeline.sh
 	docker run --rm $(AS_USER) --network none -v $(CURDIR)/tests:/tests:ro -v $(CURDIR)/tests/golden:/data:ro \
-		$(IMAGE) bash /tests/run_qa_fix_loop.sh
+		$(IMAGE) bash /tests/run_workflow.sh
 
 unit: ## Unit tests of the toolbox scripts, on the host (no image needed)
 	uvx --python 3.12 --with typer pytest -q tests/test_versions.py tests/test_etb.py
