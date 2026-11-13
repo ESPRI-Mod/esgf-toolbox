@@ -194,6 +194,34 @@ pcocc-rs image import docker-archive:esgf-toolbox.tar.gz esgf-toolbox
 podman load -i esgf-toolbox.tar.gz
 ```
 
+### Running on TGCC (pcocc-rs)
+
+Put these two functions in `~/.bashrc` (`IMG` = the name given to `pcocc-rs image import`). `tb` runs a command in the
+image **and records it in the shared run log**; `tb0` runs it without recording, for help pages and quick looks.
+`etb` subcommands (`todo`, `done`, `copy`, `log`, `versions`) are never wrapped: they write their own records.
+
+```bash
+IMG=esgf-toolbox-20261113
+ETB_SHARED_LOG=/ccc/work/cont003/cmip7/cmip7/work/etb-runs.jsonl
+
+tb0() {
+    pcocc-rs run --env PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin \
+        --env ETB_LOG="$ETB_SHARED_LOG" --env ETB_USER="$USER" "$IMG" -- "$@"
+}
+tb() {
+    if [ "$1" = etb ]; then tb0 "$@"; else tb0 etb run -- "$@"; fi
+}
+```
+
+```bash
+tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o $RUN/qa_1 $WORK     # recorded
+tb0 esgf-fix-tool apply --help                              # not recorded
+tb etb todo                                                 # where each simulation stands
+```
+
+`etb todo` warns when a milestone has no matching command in the log, e.g. `linked` with no successful
+`esgdrs make upgrade --link` on that simulation: a command run outside `tb` (or `etb run`) leaves a gap there.
+
 ## Test files
 
 ### Golden files

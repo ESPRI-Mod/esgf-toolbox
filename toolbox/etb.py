@@ -312,6 +312,45 @@ def done_command(
     typer.echo(f"{simu}: {milestone}")
 
 
+# The command a milestone should be backed by in the run log, run between the previous milestone and it.
+# (copied is recorded by etb copy itself; src-removed happens outside the image.)
+EVIDENCE = {
+    "fixed": ("esgf-fix-tool apply", lambda argv: argv[1:2] == ["apply"] and "--dry-run" not in argv, True),
+    "linked": ("esgdrs make upgrade --link", lambda argv: argv[1:3] == ["make", "upgrade"] and "--link" in argv, True),
+    "published": ("esgmapfile make", lambda argv: argv[1:2] == ["make"], False),
+}
+EVIDENCE_TOOL = {"fixed": "esgf-fix-tool", "linked": "esgdrs", "published": "esgmapfile"}
+
+
+def missing_evidence(records: list[dict], runs: list[dict]) -> list[str]:
+    """Milestones with no matching successful command in the log, e.g. 'linked' but no esgdrs --link run.
+    A command counts when it ran between the previous milestone and this one; apply and esgdrs must also
+    name the simulation's WORK directory (known from etb copy). esgmapfile works on the DRS, so for
+    'published' only the time window applies."""
+    order = list(MILESTONES)
+    by_name = {}
+    for r in sorted(records, key=lambda r: r["time"]):
+        by_name.setdefault(r["milestone"], r)  # first time each milestone was reached
+    work = by_name.get("copied", {}).get("work")
+    warnings = []
+    for milestone, (what, matches, needs_work) in EVIDENCE.items():
+        if milestone not in by_name:
+            continue
+        reached = by_name[milestone]["time"]
+        earlier = [by_name[m]["time"] for m in order[:order.index(milestone)] if m in by_name]
+        since = max(earlier) if earlier else ""
+        found = any(
+            Path(run["argv"][0]).name == EVIDENCE_TOOL[milestone] and matches(run["argv"])
+            and run.get("exit_code") == 0 and since <= run.get("start", "") <= reached
+            and (not needs_work or not work or any(work in a for a in run["argv"]))
+            for run in runs if run.get("argv")
+        )
+        if not found:
+            where = f" on {work}" if needs_work and work else ""
+            warnings.append(f"{milestone} without a successful {what}{where} in the log")
+    return warnings
+
+
 def status(simu: str, records: list[dict], months: int, today: date) -> dict:
     """Where a simulation stands: last milestone, next action, and when its source can be removed."""
     last = max(records, key=lambda r: list(MILESTONES).index(r["milestone"]))
@@ -335,7 +374,8 @@ def todo_command(
     months: Annotated[int, typer.Option(help="delay after publication before the source can be removed")] = 2,
     as_json: Annotated[bool, typer.Option("--json", help="one JSON object per simulation")] = False,
 ):
-    """Where each simulation stands, from the milestones in the log, and what to do next."""
+    """Where each simulation stands, from the milestones in the log, and what to do next.
+    Warns when a milestone has no matching command in the log (e.g. 'linked' but no esgdrs --link run)."""
     found = read_milestones(log)
     names = [simu] if simu else sorted(found)
     if simu and simu not in found:
@@ -345,12 +385,16 @@ def todo_command(
         typer.echo(f"etb: no milestone in {log} yet (start with: etb copy SRC WORK)")
         return
     today = _today()
+    runs = read_runs(log)
     for name in names:
         info = status(name, found[name], months, today)
+        info["warnings"] = missing_evidence(found[name], runs)
         if as_json:
             typer.echo(json.dumps(info))
-        else:
-            typer.echo(f"{name:32} {info['milestone']:12} {info['since']}   -> {info['next']}")
+            continue
+        typer.echo(f"{name:32} {info['milestone']:12} {info['since']}   -> {info['next']}")
+        for warning in info["warnings"]:
+            typer.echo(f"{'':32} warning: {warning}")
 
 
 if __name__ == "__main__":
