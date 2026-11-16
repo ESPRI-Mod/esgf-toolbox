@@ -175,6 +175,7 @@ def test_copy_copies_the_tree_and_records_copied(tmp_path, manifest):
     assert (work / "ATM/Output/ta.nc").read_bytes() == b"a" * 10 and (work / "readme.txt").exists()
     assert not (work / "link.nc").exists() and "1 symlink(s) skipped" in result.output
     assert not list(work.rglob(".*etb-partial"))
+    assert "3 file(s) to copy" in result.output and "100.0%" in result.output and "3/3 files" in result.output
     (m,) = milestones(log)
     assert m["simu"] == "SIM01" and m["milestone"] == "copied" and m["src"] == str(src.resolve())
     assert m["files"] == 3 and m["bytes"] == 31 and m["image"]["build_id"] == "abc123def456"

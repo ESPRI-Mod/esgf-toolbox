@@ -219,6 +219,57 @@ def _add_months(day: date, months: int) -> date:
     return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
 
 
+
+class _Progress:
+    """Copy progress on stderr: rewritten in place on a terminal, one line every 30 s otherwise (job logs)."""
+
+    def __init__(self, files: int, total: int):
+        self.files, self.total = files, total
+        self.done_files = self.done = 0
+        self.start = self.shown = time.monotonic()
+        self.tty = sys.stderr.isatty()
+        self.every = 1 if self.tty else 30
+        self.current = ""
+
+    def add(self, n: int, current: str) -> None:
+        self.done += n
+        self.current = current
+        if time.monotonic() - self.shown >= self.every:
+            self.show()
+
+    def file_done(self) -> None:
+        self.done_files += 1
+
+    def show(self, end: str = "") -> None:
+        self.shown = now = time.monotonic()
+        rate = self.done / max(now - self.start, 1e-9)
+        left = (self.total - self.done) / rate if rate else 0
+        pct = 100 * self.done / self.total if self.total else 100
+        line = (f"{pct:5.1f}%  {self.done / 1e9:.1f}/{self.total / 1e9:.1f} GB  "
+                f"{self.done_files}/{self.files} files  {rate / 1e6:.0f} MB/s  "
+                f"ETA {int(left // 3600)}h{int(left % 3600 // 60):02d}  {self.current}")
+        if self.tty:
+            width = shutil.get_terminal_size().columns - 1
+            sys.stderr.write("\r" + line[:width].ljust(width) + end)
+        else:
+            sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+
+    def close(self) -> None:
+        if self.files:
+            self.current = ""
+            self.show(end="\n")
+
+
+def _copy_file(src: Path, dst: Path, progress: _Progress, label: str, chunk: int = 16 << 20) -> None:
+    """shutil.copy2, in chunks so the progress line moves during a large file."""
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        while block := fin.read(chunk):
+            fout.write(block)
+            progress.add(len(block), label)
+    shutil.copystat(src, dst)
+
+
 @app.command("copy")
 def copy_command(
     src: Annotated[Path, typer.Argument(help="the simulation output directory (source, left untouched)")],
@@ -245,34 +296,42 @@ def copy_command(
         typer.echo(f"etb: {simu} was already copied on {previous[-1]['time']} by {previous[-1]['user']} "
                    f"({previous[-1]['files']} files); checking for missing files.")
 
-    copied = kept = 0
+    # first list everything, so the progress line knows the total; then copy
+    if not dry_run:
+        typer.echo(f"{simu}: listing {src} ...", err=True)
+    kept = 0
     total_bytes = 0
-    mismatched, skipped_links = [], []
+    mismatched, skipped_links, dirs, to_copy = [], [], [], []
     for path in sorted(src.rglob("*")):
         rel = path.relative_to(src)
         if path.is_symlink():
             skipped_links.append(str(rel))
-            continue
-        if path.is_dir():
-            if not dry_run:
-                (work / rel).mkdir(parents=True, exist_ok=True)
-            continue
-        size = path.stat().st_size
-        total_bytes += size
-        target = work / rel
-        if target.exists():
-            if target.stat().st_size == size:
+        elif path.is_dir():
+            dirs.append(rel)
+        else:
+            size = path.stat().st_size
+            total_bytes += size
+            target = work / rel
+            if not target.exists():
+                to_copy.append((rel, size))
+            elif target.stat().st_size == size:
                 kept += 1
             else:
                 mismatched.append(str(rel))
-            continue
-        copied += 1
-        if dry_run:
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        partial = target.with_name(f".{target.name}.etb-partial")
-        shutil.copy2(path, partial)
-        os.replace(partial, target)
+    copied = len(to_copy)
+    if not dry_run:
+        typer.echo(f"{simu}: {copied} file(s) to copy, {sum(s for _, s in to_copy) / 1e9:.2f} GB", err=True)
+        for rel in dirs:
+            (work / rel).mkdir(parents=True, exist_ok=True)
+        progress = _Progress(len(to_copy), sum(s for _, s in to_copy))
+        for rel, _size in to_copy:
+            target = work / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(f".{target.name}.etb-partial")
+            _copy_file(src / rel, partial, progress, str(rel))
+            os.replace(partial, target)
+            progress.file_done()
+        progress.close()
 
     files = copied + kept + len(mismatched)
     verb = "would copy" if dry_run else "copied"
