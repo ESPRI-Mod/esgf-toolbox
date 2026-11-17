@@ -97,24 +97,58 @@ code. A `start` record is written before the command, so a run killed by a job t
 (`no_end_record`). `etb run` exits with the command's own exit code, so scripts can keep using it, and passes
 `ETB_RUN_ID` to the command. If the log cannot be written, nothing is run.
 
-### Where each simulation stands (`etb copy`, `etb done`, `etb todo`)
+### Where each simulation stands (`etb copy`, `etb done`, `etb todo`, `etb reopen`)
 
 The same log records workflow milestones, so the team knows what was already done for each simulation and when
 its source can be removed. Point `$ETB_LOG` at one shared file in the work directory.
 
 ```bash
 etb copy $SRC $WORK                 # copy a simulation to the shared work directory -> milestone "copied"
-etb done $SIMU fixed                # QA clean
+etb done $SIMU fixed                # QA clean, repacked
 etb done $SIMU linked               # hard-linked into the DRS (esgdrs --link)
 etb done $SIMU published
-etb todo                            # every simulation: last milestone, next action, source removal date
 etb done $SIMU src-removed          # after rm -r $SRC
+etb todo                            # one line per simulation that needs something now
+etb todo $SIMU                      # that simulation, step by step
+etb todo --later                    # published, waiting for the delay before rm SRC
+etb todo --all                      # every simulation, finished ones included
+etb reopen $SIMU --note "v2: ..."   # a new version: steps 3-8 start again from now
 ```
 
 ```text
-SIM01      published    2026-11-13   -> rm -r the source possible from 2027-01-13 (in 61 days)
-SIM02      copied       2026-11-12   -> deduplicate ATM/SRF, then QA -> fix loop until classify exits 0 (steps 2-5)
+CM6-ESMCO2-FT-esm-pi.01          ✓✓✗✓····  step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
+CM6-ESMCO2-FT-hist.02            ✓✓▶·····  step 3 QA: tb esgqa $QA_TESTS -o $RUN/qa_1 $WORK, then classify
+(+ 1 waiting for the delay: etb todo --later; 0 done: etb todo --all)
 ```
+
+```text
+$ etb todo CM6-ESMCO2-FT-esm-pi.01
+CM6-ESMCO2-FT-esm-pi.01   (last milestone copied 2026-11-02)
+  ✓ 1 copy                     2026-11-02  copied, 900 files
+  ✓ 2 deduplicate              2026-11-03  deduplicate (exit 0)
+  ✗ 3 QA                       2026-11-06  iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
+  ✓ 4 fix                      2026-11-05  apply, fix iteration 1 (exit 0)
+  · 5 repack
+  · 6 DRS
+  · 7 final QA + publication
+  · 8 rm SRC
+  -> step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
+```
+
+`✓` done, `▶` next, `⧗` running, `†` dead, `✗` failed or blocked, `–` skipped (a later milestone was recorded
+anyway), `…` waiting for the delay, `·` not yet. The steps are read from the milestones and from the commands
+recorded in the log: deduplicate, the QA -> fix loop (iteration number, `classify` decision; done when `classify`
+exits 0), repack, esgdrs, final QA and mapfiles. Previews never count (`--dry-run`, `esgdrs make tree`,
+`cmip7repack -x`). A command belongs to a simulation when it names its WORK directory or a path with the
+simulation name as a whole component (`$RUN/qa_1/...`). Something running or dead comes first in the next action.
+
+Running or dead: `etb run` and `etb copy` touch a heartbeat file (`.etb-runs.jsonl.alive/<run_id>`, next to the
+log) every minute while they run, and remove it at the end. A run with no end record and a heartbeat less than
+5 minutes old is running; otherwise it is dead (killed without notice, e.g. at a job time limit): run it again.
+
+`etb reopen` is for a new version of a published simulation (a fix with `apply --break-hardlinks`): from then on,
+steps 3-8 only count what happens after it, so the old QA, DRS and publication no longer show as done. copy,
+deduplicate and `src-removed` are kept.
 
 `etb copy` is safe to run again: a file already in WORK with the same size is kept, one with a different size is
 reported and left alone (exit 1, no milestone), and each file is written under a temporary name then renamed, so an
@@ -219,7 +253,7 @@ tb0 esgf-fix-tool apply --help                              # not recorded
 tb etb todo                                                 # where each simulation stands
 ```
 
-`etb todo` warns when a milestone has no matching command in the log, e.g. `linked` with no successful
+`etb todo` reads the steps from what `tb` recorded, and warns when a milestone has no matching command in the log, e.g. `linked` with no successful
 `esgdrs make upgrade --link` on that simulation: a command run outside `tb` (or `etb run`) leaves a gap there.
 
 ## Test files
@@ -250,7 +284,9 @@ offline, every step through `etb` as an operator would, and checks each one:
 | `cmip7repack -o` | files repacked in place, no `*_cmip7repack` copy |
 | `esgdrs make upgrade --link` | `v<VERSION>/` symlinks to `files/d<VERSION>/`, `latest` → `v<VERSION>`, the DRS file **is** the WORK file (2 links) |
 | `esgmapfile` | one mapfile for the version |
-| `etb done` …, `etb todo` | published, source removable 2 months later; done after `src-removed` |
+| `etb todo` along the way | a dry run does not count; the QA step shows the `classify` decision; `etb copy` is recorded as a run, its heartbeat removed |
+| `etb done` …, `etb todo` | published, source removable 2 months later |
+| `etb reopen`, new version | steps 3-8 to do again, copy kept; after `rm`, `src-removed` stays done |
 | new version | `apply` refuses the hard-linked file; with `--break-hardlinks`, WORK gets the fix and the published DRS file is unchanged |
 
 The golden file has findings esgf-fix-tool can fix (e.g. `history` on the data variable) and some it cannot

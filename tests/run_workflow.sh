@@ -43,11 +43,15 @@ etb copy "$SRC" "$WORK" > copy2.out 2>&1 || fail "etb copy, second run"
 check "the copy is identical" cmp -s "$SRC"/ATM/Output/*.nc "$WORK"/ATM/Output/*.nc
 check "the second run says it was already copied" grep -q "was already copied on" copy2.out
 check "the second run copies nothing" grep -q "copied 0 file(s), 1 already there" copy2.out
+check "etb copy is recorded as a run, its heartbeat removed" bash -c \
+    "etb log | grep -q 'ok .* etb copy' && [ -z \"\$(ls -A \$(dirname \$ETB_LOG)/.etb-runs.jsonl.alive)\" ]"
 
 step "2. deduplicate ATM/SRF (dry run)"
 etb run -- esgf-fix-tool deduplicate "$WORK" --only-under "$WORK" --dry-run \
     --fixlog "$RUN/deduplicate.preview.jsonl" > dedup.out || fail "deduplicate --dry-run"
 check "nothing to delete in the golden file" grep -q "'would_delete': 0" dedup.out
+check "etb todo: a dry run does not count, deduplicate is next" \
+    test "$(etb todo "$SIMU" --json | milestone current)" = 2
 
 step "3-4. QA -> fix -> QA"
 etb run -- esgqa "${QA_TESTS[@]}" -o "$RUN/qa_1" "$WORK" > qa_1.log 2>&1 || fail "esgqa (1)"
@@ -89,6 +93,9 @@ sys.exit(1 if problems else 0)
 EOF
 pass "every fixable finding is gone, nothing new appeared"
 pass "the fixlog records the tool version, the rules digest and the etb run of apply"
+# the golden file keeps findings esgf-fix-tool cannot fix: classify says new_rule (20)
+check "etb todo: the QA step shows the classify decision" grep -q "iteration 2: classify exit 20, new_rule" \
+    <(etb todo "$SIMU")
 
 step "5. repack"
 etb run -- sh -c 'find "$1" -name "*.nc" -print0 | xargs -0 cmip7repack -o' _ "$WORK" > repack.log 2>&1 \
@@ -125,6 +132,11 @@ check "etb todo warns about a milestone without its command" \
     grep -q "fixed without a successful esgf-fix-tool apply" <(etb todo SIM02)
 
 step "new version: fix WORK without touching the published file"
+etb reopen "$SIMU" --note "v2: comment on ta" > /dev/null || fail "etb reopen"
+states() { etb todo "$SIMU" --json | python3 -c "import json,sys; print(' '.join(s['state'] for s in json.load(sys.stdin)['steps']))"; }
+# (deduplicate only ran as a dry run here, so step 2 is still to do)
+check "etb todo: reopened, QA to publication to do again, copy kept" \
+    bash -c "[[ '$(states)' == 'done next todo todo todo todo todo todo' ]]"
 python3 - "$WORK_FILE" "$RUN/fixplan_v2.json" <<'EOF'
 import json, sys
 step = {"rule": "C001", "fix": "set_var_attr", "params": {"var": "ta", "attr": "comment", "value": "new version"}}
@@ -147,7 +159,9 @@ check "the fixlog records hardlinks_broken" bash -c \
 step "8. remove the source"
 rm -r "$SRC"
 etb done "$SIMU" src-removed > /dev/null || fail "etb done src-removed"
-check "etb todo: done" grep -q "nothing: done" <(etb todo "$SIMU")
+# apply --break-hardlinks counts as the fix of the new version (step 4)
+check "etb todo: source removed, the new version still to do" \
+    bash -c "[[ '$(states)' == 'done next todo done todo todo todo done' ]]"
 check "every etb run has its end record" python3 -c "
 import json; r = [json.loads(l) for l in open('$ETB_LOG')]
 s = {x['run_id'] for x in r if x['event'] == 'start'}; e = {x['run_id'] for x in r if x['event'] == 'end'}
