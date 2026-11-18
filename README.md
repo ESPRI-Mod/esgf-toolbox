@@ -104,6 +104,7 @@ its source can be removed. Point `$ETB_LOG` at one shared file in the work direc
 
 ```bash
 etb copy $SRC $WORK                 # copy a simulation to the shared work directory -> milestone "copied"
+etb copy $SRC $WORK --only CMIP7    # only SRC/CMIP7 -> WORK/CMIP7 (not MONITORING/...); may be repeated
 etb done $SIMU fixed                # QA clean, repacked
 etb done $SIMU linked               # hard-linked into the DRS (esgdrs --link)
 etb done $SIMU published
