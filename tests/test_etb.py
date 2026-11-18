@@ -250,7 +250,7 @@ def test_todo_shows_each_simulation_and_the_source_removal_date(tmp_path, monkey
     out = lines()  # what needs something now: SIM01 waits for the delay, so it is not listed
     assert len(out) == 3 and "1 waiting for the delay" in out[2]
     assert "SIM02" in out[0] and "step 2 deduplicate" in out[0]
-    assert "SIM03" in out[1] and "possible since 2026-10-31" in out[1]   # Aug 31 + 2 months: end of October
+    assert "SIM03" in out[1] and "removed since 2026-10-31" in out[1]   # Aug 31 + 2 months: end of October
     (waiting,) = lines("--later")
     assert "SIM01" in waiting and "from 2027-01-10 (in 58 days)" in waiting
     assert len(lines("--all")) == 3
@@ -360,29 +360,39 @@ def test_todo_follows_the_qa_fix_loop_and_ignores_previews(tmp_path):
     run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK, "--dry-run"])
     info, s = steps(log)
     assert s[1]["state"] == "done" and s[2]["state"] == "next" and info["current"] == 2   # a dry run is a preview
+    assert info["command"] == f"tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --fixlog {RUN_DIR}/deduplicate.jsonl"
     run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
     run_line(log, "2026-11-03", ["esgqa", "-t", "cf:1.11", "-o", f"{RUN_DIR}/qa_1", WORK])
     info, s = steps(log)
-    assert s[2]["state"] == "done" and s[3]["state"] == "next" and "classify on qa_1" in s[3]["detail"]
+    assert s[2]["state"] == "done" and s[3]["state"] == "next" and "now classify" in s[3]["detail"]
+    assert info["command"] == f"tb esgf-fix-tool classify {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json"
     run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/qa_result_x.json"], exit_code=10)
     info, s = steps(log)
-    assert s[3]["state"] == "done" and s[4]["state"] == "next" and "fixplan_1" in info["next"]
+    assert s[3]["state"] == "done" and s[4]["state"] == "next"
+    assert info["command"] == f"tb esgf-fix-tool plan {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json -o {RUN_DIR}/fixplan_1.json"
     run_line(log, "2026-11-04", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/qa_result_x.json", "-o", "p.json"])
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "--dry-run" in info["command"] and info["command"].startswith(
+        f"tb esgf-fix-tool apply p.json --only-under {WORK} --workers 8")
     run_line(log, "2026-11-04", ["esgf-fix-tool", "apply", "p.json", "--only-under", WORK, "--dry-run"])
     info, s = steps(log)
-    assert s[4]["state"] == "next" and "run apply" in s[4]["detail"]
+    assert "dry run done" in s[4]["detail"] and info["command"].endswith(f"--fixlog {RUN_DIR}/fixlog.jsonl")
     run_line(log, "2026-11-05", ["esgf-fix-tool", "apply", "p.json", "--only-under", WORK])
     info, s = steps(log)
-    assert s[4]["state"] == "done" and s[3]["state"] == "next" and "qa_2" in info["next"]
+    assert s[4]["state"] == "done" and s[3]["state"] == "next"
+    assert info["command"] == f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_2 {WORK}"
     run_line(log, "2026-11-06", ["esgqa", "-o", f"{RUN_DIR}/qa_2", WORK])
+    assert todo_json(log, "SIM01")["command"].endswith(f"--previous {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json")
     run_line(log, "2026-11-06", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_2/qa_result_y.json"])
     info, s = steps(log)
     assert s[3]["detail"] == "iteration 2: classify exit 0 (clean)" and s[4]["state"] == "done"
     assert info["current"] == 5 and info["category"] == "current"
+    assert "cmip7repack -x' _ " + WORK in info["command"]
     run_line(log, "2026-11-07", ["sh", "-c", "find $1 | xargs -0 cmip7repack -x", "_", WORK])  # preview
-    assert steps(log)[1][5] | {"date": ""} == {"step": 5, "name": "repack", "state": "next", "detail": "", "date": ""}
+    info, s = steps(log)
+    assert s[5]["state"] == "next" and "cmip7repack -o' _ " + WORK in info["command"]
     run_line(log, "2026-11-07", ["sh", "-c", "find $1 | xargs -0 cmip7repack -o", "_", WORK])
-    assert "tb etb done SIM01 fixed" in todo_json(log, "SIM01")["next"]
+    assert todo_json(log, "SIM01")["command"] == "tb etb done SIM01 fixed"
 
 
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
@@ -462,7 +472,9 @@ def test_todo_detail_lists_every_step(tmp_path):
     assert out[0].startswith("SIM01") and "last milestone copied 2026-11-01" in out[0]
     assert out[1].split()[:3] == ["✓", "1", "copy"] and "copied, 3 files" in out[1]
     assert out[2].split()[:3] == ["▶", "2", "deduplicate"]
-    assert out[9].startswith("  -> step 2 deduplicate: tb esgf-fix-tool deduplicate")
+    assert out[9] == "  -> step 2 deduplicate: dry run first"
+    assert out[10] == (f"     tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --dry-run "
+                       f"--fixlog {RUN_DIR}/deduplicate.preview.jsonl")
 
 
 def test_copy_and_run_are_recorded_with_a_heartbeat_removed_at_the_end(tmp_path, manifest):
@@ -584,3 +596,68 @@ def test_copy_only_refuses_anything_but_a_sub_folder(tmp_path, part):
     result = runner.invoke(etb.app, ["copy", str(src), str(tmp_path / "w" / "SIM01"), "--only", part,
                                      "--log", str(tmp_path / "l.jsonl")])
     assert result.exit_code == 2 and "not a sub-folder" in result.output
+
+
+def test_todo_gives_the_command_of_every_later_step(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(etb, "_today", lambda: etb.date(2027, 3, 1))
+    copied(log)
+    milestone_line(log, "SIM01", "fixed", "2026-11-05")
+
+    def command():
+        return todo_json(log, "SIM01")["command"]
+    assert command() == f"tb esgdrs make tree -p $PROJECT --root $DRS_ROOT {WORK}"
+    run_line(log, "2026-11-06", ["esgdrs", "make", "tree", "-p", "cmip7", "--root", "/drs", WORK])
+    assert command() == f"tb esgdrs make upgrade -p $PROJECT --root $DRS_ROOT --version $VERSION --link {WORK}"
+    run_line(log, "2026-11-06", ["esgdrs", "make", "upgrade", "-p", "cmip7", "--link", WORK])
+    assert command() == "tb etb done SIM01 linked --note v$VERSION"
+    milestone_line(log, "SIM01", "linked", "2026-11-07")
+    assert command() == f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_final $DRS_SIMU"
+    run_line(log, "2026-11-08", ["esgqa", "-o", f"{RUN_DIR}/qa_final", "/drs/MIP-DRS7/x"])
+    assert command() == f"tb esgf-fix-tool classify {RUN_DIR}/qa_final/qa_result_*[0-9a-f].json --final"
+    run_line(log, "2026-11-08", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"], exit_code=20)
+    assert command().startswith("tb0 esgf-fix-tool classify") and command().endswith("--final --show 30")
+    run_line(log, "2026-11-09", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"])
+    assert command().startswith("tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir " + RUN_DIR)
+    run_line(log, "2026-11-09", ["esgmapfile", "make", "--outdir", f"{RUN_DIR}/mapfiles"])
+    assert command() == "tb etb done SIM01 published"
+    milestone_line(log, "SIM01", "published", "2026-11-10")
+    assert command() == "rm -r /data/src/SIM01 && tb etb done SIM01 src-removed"
+
+
+def test_todo_replays_a_dead_or_failed_command_and_points_to_the_failures(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    copied(log)
+    argv = ["/app/.venv/bin/esgqa", "-t", "cf:1.11", "-o", f"{RUN_DIR}/qa_1", WORK]
+    unfinished_run(log, argv, "dead1", heartbeat_age=3600)
+    assert todo_json(log, "SIM01")["command"] == f"tb esgqa -t cf:1.11 -o {RUN_DIR}/qa_1 {WORK}"
+    run_line(log, "2026-11-04", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK], exit_code=1)
+    _, s = steps(log)
+    assert s[2]["state"] == "failed" and s[2]["command"].startswith("grep") and "deduplicate.jsonl" in s[2]["command"]
+
+
+def test_todo_suggests_the_site_jobs_for_heavy_steps_when_configured(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub -r dsync-{simu} /s/copy-dsync.sh")
+    monkeypatch.setenv("ETB_JOB_QA", "SIMU={simu} ccc_msub -r qa-{simu} /s/qa-job.sh")
+    unfinished_run(log, ["etb", "copy", "/data/src/SIM05", "/data/work/SIM05"], "cp1", simu="SIM05")  # dead
+    milestone_line(log, "SIM06", "fixed", "2026-11-01")   # a known simulation with no copy recorded
+    copied(log)
+    assert todo_json(log, "SIM01")["command"].startswith(f"tb esgf-fix-tool deduplicate {WORK}")  # not heavy
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    assert todo_json(log, "SIM01")["command"] == "SIMU=SIM01 ccc_msub -r qa-SIM01 /s/qa-job.sh"
+    unfinished_run(log, ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK], "qa1", heartbeat_age=3600)   # dead: the job resumes
+    info = todo_json(log, "SIM01")
+    assert info["current"] == 3 and info["command"] == "SIMU=SIM01 ccc_msub -r qa-SIM01 /s/qa-job.sh"
+    run_line(log, "2026-11-05", ["esgf-fix-tool", "apply", "p.json", "--only-under", WORK])
+    assert todo_json(log, "SIM01")["command"] == "SIMU=SIM01 ccc_msub -r qa-SIM01 /s/qa-job.sh"   # QA N+1
+
+
+def test_todo_suggests_the_copy_job_then_the_check(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    milestone_line(log, "SIM07", "abandoned", "2026-11-01")
+    milestone_line(log, "SIM07", "restarted", "2026-11-02", from_step=1)
+    assert todo_json(log, "SIM07")["command"] == "tb etb copy $SRC $WORK --only $COPY_ONLY"
+    monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub copy-dsync.sh")
+    assert todo_json(log, "SIM07")["command"] == (
+        "SIMU=SIM07 ccc_msub copy-dsync.sh   # when it has finished: tb etb copy $SRC $WORK --only $COPY_ONLY")

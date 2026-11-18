@@ -25,6 +25,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -511,7 +512,8 @@ def missing_evidence(records: list[dict], runs: list[dict], window: str = "") ->
 
 # ---------------------------------------------------------------- etb todo: each step of each simulation
 # The steps come from the milestones and from the commands in the run log (recorded by tb / etb run).
-# Previews (--dry-run, esgdrs make tree, cmip7repack -x) never count.
+# Previews (--dry-run, esgdrs make tree, cmip7repack -x) never make a step done; they only move the
+# suggested command on to the real one. Each step carries the command to run next, ready to copy-paste.
 
 STEPS = ["copy", "deduplicate", "QA", "fix", "repack", "DRS", "final QA + publication", "rm SRC"]
 MILESTONE_STEP = {"copied": 1, "fixed": 5, "linked": 6, "published": 7, "src-removed": 8}
@@ -521,18 +523,6 @@ SYMBOL = {"done": "✓", "next": "▶", "running": "⧗", "dead": "†", "failed
 DECISIONS = {0: "clean", 10: "known", 20: "new_rule: rule or review needed, PR on esgf-fix-tool",
              21: "blocked_upstream: tell the simulation team", 30: "no_change: same fixable findings, tool bug",
              40: "checker_error: QA failed on some files, run it again"}
-HINT = {
-    1: "tb etb copy $SRC $WORK (or the dsync job, then tb etb copy to check)",
-    2: "tb esgf-fix-tool deduplicate $WORK --only-under $WORK --dry-run --fixlog $RUN/deduplicate.preview.jsonl",
-    3: "tb esgqa $QA_TESTS -o $RUN/qa_1 $WORK, then classify",
-    4: "plan + apply on the last QA report",
-    5: "cmip7repack -o on $WORK, then tb etb done SIMU fixed",
-    6: "tb esgdrs make upgrade -p $PROJECT --root $DRS_ROOT --version $VERSION --link $WORK",
-    7: "esgqa on $DRS_SIMU, classify --final, esgmapfile make, publication",
-    8: "rm -r $SRC once the delay after publication is over",
-}
-
-
 def _under(arg: str, path: str) -> bool:
     return arg == path or arg.startswith(path.rstrip("/") + "/")
 
@@ -584,8 +574,27 @@ def run_state(run: dict, log: Path) -> str:
     return "dead" if status == "killed" else "failed"
 
 
+def _job(name: str, simu: str) -> str | None:
+    """A site's job command for a heavy step, from $ETB_JOB_QA / $ETB_JOB_COPY ({simu} is replaced), or None.
+    E.g. ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh' (set by a site's environment script)."""
+    template = os.environ.get(f"ETB_JOB_{name}", "").strip()
+    return template.replace("{simu}", simu) if template else None
+
+
+def _rerun(argv: list[str]) -> str:
+    """The command line that runs a recorded command again, through tb."""
+    return "tb " + shlex.join([Path(argv[0]).name, *argv[1:]])
+
+
+def _output(argv: list[str]) -> str | None:
+    for flag in ("-o", "--output"):
+        if flag in argv[:-1]:
+            return argv[argv.index(flag) + 1]
+    return None
+
+
 def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months: int, today: date) -> dict:
-    """Each step of one simulation: state, detail and date; the current step; what to do next."""
+    """Each step of one simulation: state, detail, date and the command to run; the current step."""
     # reopen / restart start a new window: steps 3-8 (or, after restart --from 1, every step) only count
     # what happened after it
     resets = sorted((r for r in records if r["milestone"] in ("reopened", "restarted")), key=lambda r: r["time"])
@@ -598,44 +607,83 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     abandoned = max((r for r in records if r["milestone"] == "abandoned" and r["time"] > window),
                     key=lambda r: r["time"], default=None)
     work = reached.get("copied", {}).get("work")
-    found = []  # (kind, run, in this window), oldest first
+    found, previews = [], []  # (kind, run, start), oldest first
     for run in sorted(runs, key=lambda r: r.get("start", "")):
         if run.get("argv") and _names(run, simu, work):
             kind = run_kind(run["argv"], work)
-            if kind and not kind[1]:
-                found.append((kind[0], run, run.get("start", "")))
-    steps = {i: {"step": i, "name": STEPS[i - 1], "state": "todo", "detail": "", "date": ""} for i in STEPS_RANGE}
+            if kind:
+                (previews if kind[1] else found).append((kind[0], run, run.get("start", "")))
+    # Commands name this simulation's own paths: the shell's $WORK / $RUN may be another simulation's.
+    # $QA_TESTS, $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU, $COPY_ONLY come from etb-env.sh.
+    w = work or "$WORK"
+    rd = str(_run_dir(work, simu)) if work else "$RUN"
+    src = reached.get("copied", {}).get("src") or "$SRC"
+    steps = {i: {"step": i, "name": STEPS[i - 1], "state": "todo", "detail": "", "date": "", "command": ""}
+             for i in STEPS_RANGE}
 
-    def put(i, state, detail, source=None):
+    def put(i, state, detail, source=None, command=""):
         when = (source or {}).get("start") or (source or {}).get("time") or ""
-        steps[i].update(state=state, detail=detail, date=when[:10])
+        steps[i].update(state=state, detail=detail, date=when[:10], command=command)
 
-    def from_run(i, run, label, ok=None, fail=None):
+    def from_run(i, run, label, ok=None, fail=None, look=None):
         state = run_state(run, log)
         if state == "ok":
-            put(i, *(ok or ("done", f"{label} (exit 0)")), run)
+            ok_state, ok_detail, *ok_command = ok or ("done", f"{label} (exit 0)")
+            put(i, ok_state, ok_detail, run, ok_command[0] if ok_command else "")
         elif state == "running":
             put(i, "running", f"{label} running since {run['start'][:16].replace('T', ' ')}", run)
         elif state == "dead":
-            put(i, "dead", f"{label} stopped with no end record (killed?): run it again", run)
+            put(i, "dead", f"{label} stopped with no end record (killed?): run it again", run, _rerun(run["argv"]))
         else:
-            put(i, "failed", fail or f"{label} exit {run.get('exit_code')}", run)
+            put(i, "failed", fail or f"{label} exit {run.get('exit_code')}", run, look or _rerun(run["argv"]))
 
     def last(*kinds, everywhere=False):  # everywhere: also before reopen (steps 1-2 are done once)
         since = fresh if everywhere else window
         return next(((k, r) for k, r, start in reversed(found) if k in kinds and start >= since), (None, None))
+
+    def previewed(kind, after="", everywhere=False):
+        since = max(after, fresh if everywhere else window)
+        return any(k == kind and start >= since and run_state(r, log) == "ok" for k, r, start in previews)
 
     # 1-2: once per simulation, whatever the window
     if "copied" in reached:
         put(1, "done", f"copied, {reached['copied'].get('files', '?')} files", reached["copied"])
     elif (run := last("copy", everywhere=True)[1]):
         from_run(1, run, "etb copy", fail="etb copy: files differ in WORK, see its output")
+    else:
+        check = "tb etb copy $SRC $WORK --only $COPY_ONLY"
+        job = _job("COPY", simu)
+        put(1, "todo", "copy SRC to WORK: the copy job, then the check (it records the milestone)" if job
+            else "copy SRC to WORK (big simulation: a parallel copy job first, then this to check)",
+            command=f"{job}   # when it has finished: {check}" if job else check)
     if (run := last("deduplicate", everywhere=True)[1]):
-        from_run(2, run, "deduplicate", fail="deduplicate exit 1: some pairs failed, both files kept "
-                                             "(see $RUN/deduplicate.jsonl)")
+        from_run(2, run, "deduplicate", fail="deduplicate exit 1: some pairs failed, both files kept",
+                 look=f"grep '\"status\": \"failed\"' {rd}/deduplicate.jsonl | tail -5")
+    elif previewed("deduplicate", everywhere=True):
+        put(2, "todo", "dry run done: now for real (apply also deduplicates, so this can be skipped)",
+            command=f"tb esgf-fix-tool deduplicate {w} --only-under {w} --fixlog {rd}/deduplicate.jsonl")
+    else:
+        put(2, "todo", "dry run first", command=f"tb esgf-fix-tool deduplicate {w} --only-under {w} --dry-run "
+                                                f"--fixlog {rd}/deduplicate.preview.jsonl")
 
     # 3-4: the QA -> fix loop, done when classify exits 0
-    n = 0
+    def report(k):
+        return f"{rd}/qa_{k}/qa_result_*[0-9a-f].json"
+
+    qa_job = _job("QA", simu)  # finds the iteration itself, resumes a cut run, then runs classify
+
+    def qa(k):
+        return qa_job or f"tb esgqa $QA_TESTS -o {rd}/qa_{k} {w}"
+
+    def classify(k):
+        return f"tb esgf-fix-tool classify {report(k)}" + (f" --previous {report(k - 1)}" if k > 1 else "")
+
+    def apply(plan, dry):
+        return (f"tb esgf-fix-tool apply {plan} --only-under {w} --workers 8 "
+                + (f"--dry-run --fixlog {rd}/fixlog.dry-run.jsonl" if dry else f"--fixlog {rd}/fixlog.jsonl"))
+
+    put(3, "todo", "QA iteration 1" + ("" if qa_job else " (big simulation: better as a job)"), command=qa(1))
+    n, plan, planned = 0, None, ""
     for kind, run, start in found:
         if start < window or kind not in ("qa", "classify", "plan", "apply"):
             continue
@@ -643,7 +691,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         state = run_state(run, log)
         if kind == "qa":
             n = int(number.group(1)) if number else n + 1
-            from_run(3, run, f"QA iteration {n}", ok=("next", f"iteration {n}: QA done, run classify on qa_{n}"))
+            from_run(3, run, f"QA iteration {n}", ok=("next", f"iteration {n}: QA done, now classify", classify(n)))
+            if state == "dead" and qa_job:  # the job resumes the cut run (esgqa -r)
+                steps[3]["command"] = qa_job
             if state == "ok" and steps[4]["state"] == "next":
                 put(4, "todo", "")
         elif kind == "classify":
@@ -657,23 +707,36 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                     put(4, "done", "not needed", run)
             elif code == 10:
                 put(3, "done", f"iteration {n}: classify exit 10 (known)", run)
-                put(4, "next", f"fix iteration {n}: tb esgf-fix-tool plan $RUN/qa_{n}/qa_result_*[0-9a-f].json "
-                               f"-o $RUN/fixplan_{n}.json, then apply", run)
+                put(4, "next", f"fix iteration {n}: plan the fixes", run,
+                    f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
             else:
-                put(3, "failed", f"iteration {n}: classify exit {code}, {DECISIONS.get(code, 'error')}", run)
+                put(3, "failed", f"iteration {n}: classify exit {code}, {DECISIONS.get(code, 'error')}", run,
+                    f"tb0 esgf-fix-tool classify {report(n)} --show 30")
         elif kind == "plan" and state == "ok" and steps[4]["state"] == "next":
-            put(4, "next", f"fix iteration {n}: fixplan written, run apply", run)
+            plan, planned = _output(run["argv"]) or f"{rd}/fixplan_{n}.json", start
+            put(4, "next", f"fix iteration {n}: fixplan written, dry run first", run, apply(plan, dry=True))
         elif kind == "apply":
             from_run(4, run, f"apply, fix iteration {n}",
-                     fail=f"apply, fix iteration {n}: exit {run.get('exit_code')}, some files failed (fixlog)")
+                     fail=f"apply, fix iteration {n}: exit {run.get('exit_code')}, some files failed",
+                     look=f"grep '\"status\": \"failed\"' {rd}/fixlog.jsonl | tail -3")
             if state == "ok":
-                put(3, "next", f"QA iteration {n + 1}: tb esgqa $QA_TESTS -o $RUN/qa_{n + 1} $WORK", run)
+                plan = None
+                put(3, "next", f"QA iteration {n + 1}", run, qa(n + 1))
+    if plan and steps[4]["state"] == "next" and previewed("apply", after=planned):
+        put(4, "next", f"fix iteration {n}: dry run done, now for real", None, apply(plan, dry=False))
 
     # 5-8: confirmed by milestones; the log says how far the step went before that
+    def repack(option):
+        return f"tb sh -c 'find \"$1\" -name \"*.nc\" -print0 | xargs -0 cmip7repack {option}' _ {w}"
+
     if "fixed" in reached:
         put(5, "done", "milestone fixed", reached["fixed"])
     elif (run := last("repack")[1]):
-        from_run(5, run, "cmip7repack", ok=("next", f"repacked: tb etb done {simu} fixed"))
+        from_run(5, run, "cmip7repack", ok=("next", "repacked: record the milestone", f"tb etb done {simu} fixed"))
+    elif previewed("repack"):
+        put(5, "todo", "preview done: now for real, in place (-o)", command=repack("-o"))
+    else:
+        put(5, "todo", "preview first (-x)", command=repack("-x"))
     if "linked" in reached:
         put(6, "done", f"milestone linked {reached['linked'].get('note') or ''}".strip(), reached["linked"])
     elif (run := last("drs")[1]):
@@ -681,21 +744,34 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             put(6, "failed", "esgdrs make upgrade WITHOUT --link: the files were moved out of WORK", run)
         else:
             from_run(6, run, "esgdrs make upgrade --link",
-                     ok=("next", f"linked: check stat -L -c %h = 2, then tb etb done {simu} linked"))
+                     ok=("next", "linked: check a DRS file has 2 links (stat -L -c %h), then record it",
+                         f"tb etb done {simu} linked --note v$VERSION"))
+    elif previewed("drs"):
+        put(6, "todo", "tree checked (set DRS_SIMU from it): now for real, by hard link",
+            command=f"tb esgdrs make upgrade -p $PROJECT --root $DRS_ROOT --version $VERSION --link {w}")
+    else:
+        put(6, "todo", "preview the DRS tree first", command=f"tb esgdrs make tree -p $PROJECT --root $DRS_ROOT {w}")
+    final = f"{rd}/qa_final/qa_result_*[0-9a-f].json"
     if "published" in reached:
         put(7, "done", "milestone published", reached["published"])
     else:
         kind, run = last("final-qa", "final-classify", "mapfile")
         if kind == "final-qa":
-            from_run(7, run, "final QA", ok=("next", "final QA done: classify --final on $RUN/qa_final"))
+            from_run(7, run, "final QA", ok=("next", "final QA done: the final gate",
+                                             f"tb esgf-fix-tool classify {final} --final"))
         elif kind == "final-classify" and run_state(run, log) == "ok":
-            put(7, "next", "final gate passed: esgmapfile make", run)
+            put(7, "next", "final gate passed: the mapfiles", run,
+                f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {rd}/mapfiles --version $VERSION")
         elif kind == "final-classify" and run.get("exit_code") not in (None, 0) and run.get("status") != "killed":
             code = run.get("exit_code")
-            put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}", run)
+            put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}", run,
+                f"tb0 esgf-fix-tool classify {final} --final --show 30")
         elif kind:
             from_run(7, run, "final QA" if kind != "mapfile" else "esgmapfile make",
-                     ok=("next", f"mapfiles written: publish from the ESGF VM, then tb etb done {simu} published"))
+                     ok=("next", "mapfiles written: publish from the ESGF VM, then record it",
+                         f"tb etb done {simu} published"))
+        else:
+            put(7, "todo", "final QA on the DRS", command=f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
     removable = None
     if "src-removed" in reached:
         put(8, "done", "milestone src-removed", reached["src-removed"])
@@ -703,8 +779,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         removable = _add_months(date.fromisoformat(reached["published"]["time"][:10]), months)
         days = (removable - today).days
         if days <= 0:
-            put(8, "next", f"rm -r {reached.get('copied', {}).get('src') or '$SRC'} possible since {removable}, "
-                           f"then tb etb done {simu} src-removed")
+            put(8, "next", f"the source can be removed since {removable}",
+                command=f"rm -r {src} && tb etb done {simu} src-removed")
         else:
             put(8, "waiting", f"rm -r the source possible from {removable} (in {days} days)")
 
@@ -713,8 +789,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     top = max(milestones, key=MILESTONE_STEP.get, default=None)
     for i in range(1, MILESTONE_STEP[top] if top else 1):
         if steps[i]["state"] != "done":
-            steps[i].update(state="skipped", detail=f"{steps[i]['detail'] or 'not seen in the log'} "
-                                                    f"(milestone {top} recorded)")
+            steps[i].update(state="skipped", command="",
+                            detail=f"{steps[i]['detail'] or 'not seen in the log'} (milestone {top} recorded)")
 
     # something running or dead is what matters now; otherwise the first step not done
     active = [i for i in STEPS_RANGE if steps[i]["state"] in ("running", "dead")]
@@ -723,6 +799,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     for i in STEPS_RANGE:  # one ▶ only: the current step
         if i != current and steps[i]["state"] == "next":
             steps[i]["state"] = "todo"
+    command = ""
     if abandoned:
         category = "abandoned"
         next_action = f"abandoned {abandoned['time'][:10]}" + (f": {abandoned['note']}" if abandoned.get("note") else "")
@@ -732,11 +809,11 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         if steps[current]["state"] == "todo":
             steps[current]["state"] = "next"
         category = "later" if steps[current]["state"] == "waiting" else "current"
-        detail = steps[current]["detail"] or HINT[current].replace("SIMU", simu)
-        next_action = f"step {current} {STEPS[current - 1]}: {detail}"
+        next_action = f"step {current} {STEPS[current - 1]}: {steps[current]['detail']}"
+        command = steps[current]["command"]
     latest = max(reached.values(), key=lambda r: r["time"], default={})
     reset = resets[-1] if resets else None
-    return {"simu": simu, "category": category, "current": current, "next": next_action,
+    return {"simu": simu, "category": category, "current": current, "next": next_action, "command": command,
             "milestone": latest.get("milestone"), "since": latest.get("time", "")[:10],
             "src": reached.get("copied", {}).get("src"),
             "src_removable_from": removable.isoformat() if removable else None,
@@ -780,8 +857,10 @@ def todo_command(
     One simulation, every step with its date and evidence:        etb todo SIMU
     Steps: ✓ done  ▶ next  ⧗ running  † dead (no end record, no heartbeat)  ✗ failed or blocked
            – skipped (a later milestone was recorded)  … waiting (delay before rm SRC)  · not yet
-    A step is read from the milestones and from the commands recorded by tb / etb run; previews
-    (--dry-run, esgdrs make tree, cmip7repack -x) do not count. Warns when a milestone has no matching
+    Under each simulation: the command to run next, with its own paths, ready to copy-paste (it uses
+    $QA_TESTS, $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU from etb-env.sh). A step is read from the
+    milestones and from the commands recorded by tb / etb run; previews (--dry-run, esgdrs make tree,
+    cmip7repack -x) do not make a step done, they move the command on to the real one. Warns when a milestone has no matching
     command in the log (e.g. 'linked' but no esgdrs --link run)."""
     runs = read_runs(log) if log.is_file() else []
     found = _simulations(log, runs)
@@ -810,6 +889,8 @@ def todo_command(
             typer.echo(f"  {SYMBOL[step['state']]} {step['step']} {step['name']:24} {step['date'] or '':10}  "
                        f"{step['detail']}".rstrip())
         typer.echo(f"  -> {info['next']}")
+        if info["command"]:
+            typer.echo(f"     {info['command']}")
         for warning in info["warnings"]:
             typer.echo(f"  warning: {warning}")
         return
@@ -818,6 +899,8 @@ def todo_command(
     for info in infos:
         strip = "".join(SYMBOL[step["state"]] for step in info["steps"])
         typer.echo(f"{info['simu']:32} {strip}  {info['next']}")
+        if info["command"]:
+            typer.echo(f"{'':33}{info['command']}")
         for warning in info["warnings"]:
             typer.echo(f"{'':32} warning: {warning}")
     waiting = sum(i["category"] == "later" for i in hidden)

@@ -120,9 +120,22 @@ etb restart $SIMU --from 1|3        # start again from the copy (1) or from QA (
 
 ```text
 CM6-ESMCO2-FT-esm-pi.01          ✓✓✗✓····  step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
-CM6-ESMCO2-FT-hist.02            ✓✓▶·····  step 3 QA: tb esgqa $QA_TESTS -o $RUN/qa_1 $WORK, then classify
-(+ 1 waiting for the delay: etb todo --later; 0 done: etb todo --all)
+                                 tb0 esgf-fix-tool classify /ccc/work/.../_runs/CM6-ESMCO2-FT-esm-pi.01/qa_2/qa_result_*[0-9a-f].json --show 30
+CM6-ESMCO2-FT-hist.02            ✓✓▶·····  step 3 QA: QA iteration 1 (big simulation: the qa-job.sh job)
+                                 tb esgqa $QA_TESTS -o /ccc/work/.../_runs/CM6-ESMCO2-FT-hist.02/qa_1 /ccc/work/.../CM6-ESMCO2-FT-hist.02
+(+ 1 waiting for the delay: etb todo --later; 0 done or abandoned: etb todo --all)
 ```
+
+Under each simulation is the command to run next, ready to copy-paste. It names that simulation's own SRC, WORK
+and RUN (`<work dir>/_runs/SIMU`), since the shell's `$WORK` may be another simulation's, and uses `$QA_TESTS`,
+`$PROJECT`, `$DRS_ROOT`, `$VERSION`, `$DRS_SIMU`, `$COPY_ONLY` from `etb-env.sh`. A preview moves it on to the
+real command (deduplicate and apply `--dry-run`, `cmip7repack -x`, `esgdrs make tree`). After a failed or dead
+run, it is that run again, or a look at what failed (`classify --show 30`, the failed lines of the log).
+
+Heavy steps can be suggested as jobs instead, so they don't run on a login node: when `$ETB_JOB_QA` or
+`$ETB_JOB_COPY` is set (inside the image), `etb todo` suggests it for QA on WORK (iteration N, N+1, or resuming
+a dead one) and for the copy (followed by the `etb copy` check), with `{simu}` replaced by the simulation name.
+A site's environment script sets them, e.g. `ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh'`.
 
 ```text
 $ etb todo CM6-ESMCO2-FT-esm-pi.01
@@ -136,6 +149,7 @@ CM6-ESMCO2-FT-esm-pi.01   (last milestone copied 2026-11-02)
   · 7 final QA + publication
   · 8 rm SRC
   -> step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
+     tb0 esgf-fix-tool classify /ccc/work/.../_runs/CM6-ESMCO2-FT-esm-pi.01/qa_2/qa_result_*[0-9a-f].json --show 30
 ```
 
 `✓` done, `▶` next, `⧗` running, `†` dead, `✗` failed or blocked, `–` skipped (a later milestone was recorded
