@@ -560,3 +560,27 @@ def test_restart_is_refused_once_linked_and_brings_an_abandoned_simulation_back(
     result = cli(log, "restart", "SIM01", "--from", "3")
     assert result.exit_code == 2 and "use etb reopen" in result.output
     assert cli(log, "abandon", "SIM09").exit_code == 2
+
+
+def test_copy_only_copies_the_named_sub_folders(tmp_path, manifest):
+    src, work, log = simulation(tmp_path / "src"), tmp_path / "work" / "SIM01", tmp_path / "runs.jsonl"
+    (src / "MONITORING").mkdir()
+    (src / "MONITORING" / "m.nc").write_bytes(b"m" * 5)
+    result = runner.invoke(etb.app, ["copy", str(src), str(work), "--only", "ATM", "--log", str(log)])
+    assert result.exit_code == 0, result.output
+    assert (work / "ATM/Output/ta.nc").exists() and not (work / "SRF").exists() and not (work / "MONITORING").exists()
+    assert "copied 1 file(s)" in result.output and "in SRC/ATM" in result.output
+    (m,) = milestones(log)
+    assert m["only"] == ["ATM"] and m["files"] == 1 and m["work"] == str(work.resolve())
+    again = runner.invoke(etb.app, ["copy", str(src), str(work), "--only", "ATM", "--log", str(log)])
+    assert "copied 0 file(s), 1 already there" in again.output   # MONITORING is not missing: not asked for
+    runs = [json.loads(line) for line in runner.invoke(etb.app, ["log", "--log", str(log), "--json"]).output.splitlines()]
+    assert runs[0]["argv"][-2:] == ["--only", "ATM"]
+
+
+@pytest.mark.parametrize("part", ["NOPE", "..", "ATM/Output"])
+def test_copy_only_refuses_anything_but_a_sub_folder(tmp_path, part):
+    src = simulation(tmp_path / "src")
+    result = runner.invoke(etb.app, ["copy", str(src), str(tmp_path / "w" / "SIM01"), "--only", part,
+                                     "--log", str(tmp_path / "l.jsonl")])
+    assert result.exit_code == 2 and "not a sub-folder" in result.output

@@ -5,7 +5,7 @@
     etb versions [--json | --live]          versions of everything in the image (build manifest)
     etb run [--note TEXT] -- COMMAND ...     run a command and record it in the run log
     etb log [--last N] [--json]              show the run log
-    etb copy SRC WORK [--dry-run]            copy a simulation to the shared work directory (milestone copied)
+    etb copy SRC WORK [--only DIR] [--dry-run]   copy a simulation to the shared work directory (milestone copied)
     etb done SIMU MILESTONE                  record a workflow milestone: fixed, linked, published, src-removed
     etb reopen SIMU [--note TEXT]            start again from step 3 for a new version of a simulation
     etb restart SIMU --from 1|3 [--delete]   start again: from the copy (1) or from QA (3)
@@ -358,8 +358,11 @@ def copy_command(
     log: LogOption = DEFAULT_LOG,
     simu: Annotated[str | None, typer.Option(help="simulation name; default: the name of WORK")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="show what would be copied, copy nothing")] = False,
+    only: Annotated[list[str] | None, typer.Option(
+        "--only", help="copy only this sub-folder of SRC, e.g. CMIP7 (not MONITORING); may be repeated")] = None,
 ):
     """Copy SRC to WORK and record the milestone 'copied'. Safe to run again: files already copied are kept.
+    With --only CMIP7, only SRC/CMIP7 is copied, to WORK/CMIP7.
 
     Each file is written under a temporary name and renamed when complete, so an interrupted copy never
     leaves a truncated file under its real name. A file already in WORK with the same size is kept; one with
@@ -372,26 +375,33 @@ def copy_command(
     if work.is_relative_to(src) or src.is_relative_to(work):
         typer.echo("etb: SRC and WORK must not contain each other", err=True)
         raise typer.Exit(2)
+    only = sorted(set(only or []))
+    bad = [part for part in only if Path(part).name != part or part in ("", ".", "..") or not (src / part).is_dir()]
+    if bad:
+        typer.echo(f"etb: --only {bad[0]}: not a sub-folder of {src}", err=True)
+        raise typer.Exit(2)
     previous = [m for m in read_milestones(log).get(simu, []) if m["milestone"] == "copied"]
     if previous:
         typer.echo(f"etb: {simu} was already copied on {previous[-1]['time']} by {previous[-1]['user']} "
                    f"({previous[-1]['files']} files); checking for missing files.")
 
     if dry_run:
-        _copy_tree(src, work, simu, log, dry_run=True)
+        _copy_tree(src, work, simu, log, only, dry_run=True)
         return
-    with _recorded(log, ["etb", "copy", str(src), str(work)], simu=simu):
-        _copy_tree(src, work, simu, log, dry_run=False)
+    argv = ["etb", "copy", str(src), str(work), *(a for part in only for a in ("--only", part))]
+    with _recorded(log, argv, simu=simu):
+        _copy_tree(src, work, simu, log, only, dry_run=False)
 
 
-def _copy_tree(src: Path, work: Path, simu: str, log: Path, *, dry_run: bool) -> None:
+def _copy_tree(src: Path, work: Path, simu: str, log: Path, only: list[str], *, dry_run: bool) -> None:
     # first list everything, so the progress line knows the total; then copy
     if not dry_run:
-        typer.echo(f"{simu}: listing {src} ...", err=True)
+        typer.echo(f"{simu}: listing {src}{' (' + ', '.join(only) + ' only)' if only else ''} ...", err=True)
     kept = 0
     total_bytes = 0
     mismatched, skipped_links, dirs, to_copy = [], [], [], []
-    for path in sorted(src.rglob("*")):
+    tops = [src / part for part in only] if only else [src]
+    for path in sorted(p for top in tops for p in ([top] if only else []) + list(top.rglob("*"))):
         rel = path.relative_to(src)
         if path.is_symlink():
             skipped_links.append(str(rel))
@@ -425,7 +435,7 @@ def _copy_tree(src: Path, work: Path, simu: str, log: Path, *, dry_run: bool) ->
     files = copied + kept + len(mismatched)
     verb = "would copy" if dry_run else "copied"
     typer.echo(f"{simu}: {verb} {copied} file(s), {kept} already there, {len(mismatched)} different, "
-               f"{len(skipped_links)} symlink(s) skipped; {files} files, {total_bytes / 1e9:.2f} GB in SRC")
+               f"{len(skipped_links)} symlink(s) skipped; {files} files, {total_bytes / 1e9:.2f} GB in SRC{'/' + ','.join(only) if only else ''}")
     for rel in mismatched[:20]:
         typer.echo(f"  different size in WORK, left alone: {rel}", err=True)
     for rel in skipped_links[:20]:
@@ -436,7 +446,7 @@ def _copy_tree(src: Path, work: Path, simu: str, log: Path, *, dry_run: bool) ->
         typer.echo("etb: milestone 'copied' not recorded: fix the files above, then run etb copy again", err=True)
         raise typer.Exit(1)
     _milestone(log, simu, "copied", src=str(src), work=str(work), files=files, bytes=total_bytes,
-               symlinks_skipped=len(skipped_links))
+               symlinks_skipped=len(skipped_links), only=only or None)
 
 
 @app.command("done")
