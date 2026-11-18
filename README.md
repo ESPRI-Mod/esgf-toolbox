@@ -113,6 +113,8 @@ etb todo $SIMU                      # that simulation, step by step
 etb todo --later                    # published, waiting for the delay before rm SRC
 etb todo --all                      # every simulation, finished ones included
 etb reopen $SIMU --note "v2: ..."   # a new version: steps 3-8 start again from now
+etb abandon $SIMU [--delete]        # drop it (wrong simulation...); --delete removes WORK and RUN
+etb restart $SIMU --from 1|3        # start again from the copy (1) or from QA (3)
 ```
 
 ```text
@@ -145,6 +147,21 @@ simulation name as a whole component (`$RUN/qa_1/...`). Something running or dea
 Running or dead: `etb run` and `etb copy` touch a heartbeat file (`.etb-runs.jsonl.alive/<run_id>`, next to the
 log) every minute while they run, and remove it at the end. A run with no end record and a heartbeat less than
 5 minutes old is running; otherwise it is dead (killed without notice, e.g. at a job time limit): run it again.
+
+`etb abandon` and `etb restart` clean up a simulation, for example after finding the wrong one was copied, or
+data that must not be published. The log is append-only, so they record a milestone instead of erasing anything:
+
+```bash
+etb abandon $SIMU --note "why"            # etb todo no longer lists it (--all still does); files kept
+etb abandon $SIMU --delete                # also remove its WORK and RUN (<work dir>/_runs/SIMU, or --run DIR)
+etb restart $SIMU --from 1 --delete       # start again from the copy: WORK and RUN removed, then etb copy again
+etb restart $SIMU --from 3 --delete       # start again from QA: qa_*, fixplan_*, fixlog* removed, WORK kept
+```
+
+Steps 2-5 change WORK in place, so going back before them means a fresh copy (`--from 1`); `--from 3` keeps
+fixes already applied (it warns). SRC is never touched; a directory is only removed if it is named after the
+simulation and is not, or does not contain, the source. Both refuse `--delete` once the simulation was linked into
+the DRS, and `restart` refuses a linked simulation altogether: for a new version, use `etb reopen`.
 
 `etb reopen` is for a new version of a published simulation (a fix with `apply --break-hardlinks`): from then on,
 steps 3-8 only count what happens after it, so the old QA, DRS and publication no longer show as done. copy,
@@ -287,6 +304,7 @@ offline, every step through `etb` as an operator would, and checks each one:
 | `etb todo` along the way | a dry run does not count; the QA step shows the `classify` decision; `etb copy` is recorded as a run, its heartbeat removed |
 | `etb done` …, `etb todo` | published, source removable 2 months later |
 | `etb reopen`, new version | steps 3-8 to do again, copy kept; after `rm`, `src-removed` stays done |
+| `etb abandon SIM02 --delete` | its WORK removed, hidden from `etb todo`, shown as abandoned by `--all`, the source untouched |
 | new version | `apply` refuses the hard-linked file; with `--break-hardlinks`, WORK gets the fix and the published DRS file is unchanged |
 
 The golden file has findings esgf-fix-tool can fix (e.g. `history` on the data variable) and some it cannot

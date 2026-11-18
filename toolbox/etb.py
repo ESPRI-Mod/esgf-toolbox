@@ -8,6 +8,8 @@
     etb copy SRC WORK [--dry-run]            copy a simulation to the shared work directory (milestone copied)
     etb done SIMU MILESTONE                  record a workflow milestone: fixed, linked, published, src-removed
     etb reopen SIMU [--note TEXT]            start again from step 3 for a new version of a simulation
+    etb restart SIMU --from 1|3 [--delete]   start again: from the copy (1) or from QA (3)
+    etb abandon SIMU [--delete]              drop a simulation: hidden from etb todo, WORK and RUN removed
     etb todo [SIMU] [--later | --all]        each step of each simulation: done, running, dead, next
 
 The run log is a JSON lines file (default ./etb-runs.jsonl, or --log / $ETB_LOG). Each run writes a
@@ -574,18 +576,24 @@ def run_state(run: dict, log: Path) -> str:
 
 def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months: int, today: date) -> dict:
     """Each step of one simulation: state, detail and date; the current step; what to do next."""
-    window = max((r["time"] for r in records if r["milestone"] == "reopened"), default="")
+    # reopen / restart start a new window: steps 3-8 (or, after restart --from 1, every step) only count
+    # what happened after it
+    resets = sorted((r for r in records if r["milestone"] in ("reopened", "restarted")), key=lambda r: r["time"])
+    window = resets[-1]["time"] if resets else ""
+    fresh = max((r["time"] for r in resets if r.get("from_step") == 1), default="")
     reached = {}
     for r in sorted(records, key=lambda r: r["time"]):
-        if r["milestone"] in MILESTONE_STEP and (r["milestone"] in PERMANENT or r["time"] >= window):
+        if r["milestone"] in MILESTONE_STEP and r["time"] >= (fresh if r["milestone"] in PERMANENT else window):
             reached[r["milestone"]] = r  # the last one
+    abandoned = max((r for r in records if r["milestone"] == "abandoned" and r["time"] > window),
+                    key=lambda r: r["time"], default=None)
     work = reached.get("copied", {}).get("work")
     found = []  # (kind, run, in this window), oldest first
     for run in sorted(runs, key=lambda r: r.get("start", "")):
         if run.get("argv") and _names(run, simu, work):
             kind = run_kind(run["argv"], work)
             if kind and not kind[1]:
-                found.append((kind[0], run, run.get("start", "") >= window))
+                found.append((kind[0], run, run.get("start", "")))
     steps = {i: {"step": i, "name": STEPS[i - 1], "state": "todo", "detail": "", "date": ""} for i in STEPS_RANGE}
 
     def put(i, state, detail, source=None):
@@ -603,9 +611,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         else:
             put(i, "failed", fail or f"{label} exit {run.get('exit_code')}", run)
 
-    def last(*kinds, everywhere=False):
-        return next(((k, r) for k, r, inside in reversed(found) if k in kinds and (inside or everywhere)),
-                    (None, None))
+    def last(*kinds, everywhere=False):  # everywhere: also before reopen (steps 1-2 are done once)
+        since = fresh if everywhere else window
+        return next(((k, r) for k, r, start in reversed(found) if k in kinds and start >= since), (None, None))
 
     # 1-2: once per simulation, whatever the window
     if "copied" in reached:
@@ -618,8 +626,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
 
     # 3-4: the QA -> fix loop, done when classify exits 0
     n = 0
-    for kind, run, inside in found:
-        if not inside or kind not in ("qa", "classify", "plan", "apply"):
+    for kind, run, start in found:
+        if start < window or kind not in ("qa", "classify", "plan", "apply"):
             continue
         number = re.search(r"qa_(\d+)", " ".join(run["argv"]))
         state = run_state(run, log)
@@ -705,7 +713,10 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     for i in STEPS_RANGE:  # one ▶ only: the current step
         if i != current and steps[i]["state"] == "next":
             steps[i]["state"] = "todo"
-    if current is None:
+    if abandoned:
+        category = "abandoned"
+        next_action = f"abandoned {abandoned['time'][:10]}" + (f": {abandoned['note']}" if abandoned.get("note") else "")
+    elif current is None:
         category, next_action = "done", "nothing: done"
     else:
         if steps[current]["state"] == "todo":
@@ -714,15 +725,24 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         detail = steps[current]["detail"] or HINT[current].replace("SIMU", simu)
         next_action = f"step {current} {STEPS[current - 1]}: {detail}"
     latest = max(reached.values(), key=lambda r: r["time"], default={})
+    reset = resets[-1] if resets else None
     return {"simu": simu, "category": category, "current": current, "next": next_action,
             "milestone": latest.get("milestone"), "since": latest.get("time", "")[:10],
             "src": reached.get("copied", {}).get("src"),
             "src_removable_from": removable.isoformat() if removable else None,
-            "reopened": window[:10] or None, "steps": list(steps.values()),
+            "reopened": window[:10] or None, "reset": _reset_text(reset),
+            "work": reached.get("copied", {}).get("work"), "steps": list(steps.values()),
             "warnings": missing_evidence([r for r in reached.values()], runs, window)}
 
 
 STEPS_RANGE = range(1, len(STEPS) + 1)
+
+
+def _reset_text(reset: dict | None) -> str | None:
+    if not reset:
+        return None
+    what = "reopened" if reset["milestone"] == "reopened" else f"restarted from step {reset.get('from_step')}"
+    return f"{what} {reset['time'][:10]}"
 
 
 def _simulations(log: Path, runs: list[dict]) -> dict[str, list[dict]]:
@@ -739,7 +759,7 @@ def todo_command(
     simu: Annotated[str | None, typer.Argument(help="one simulation, step by step; default: one line each")] = None,
     log: LogOption = DEFAULT_LOG,
     later: Annotated[bool, typer.Option("--later", help="the published ones, waiting to remove the source")] = False,
-    show_all: Annotated[bool, typer.Option("--all", help="every simulation, finished ones included")] = False,
+    show_all: Annotated[bool, typer.Option("--all", help="every simulation, finished and abandoned included")] = False,
     months: Annotated[int, typer.Option(help="delay after publication before the source can be removed")] = 2,
     as_json: Annotated[bool, typer.Option("--json", help="one JSON object per simulation")] = False,
 ):
@@ -764,7 +784,7 @@ def todo_command(
     today = _today()
     infos = [steps_of(name, found[name], runs, log, months, today) for name in ([simu] if simu else sorted(found))]
     if not simu:
-        wanted = {"current", "later", "done"} if show_all else {"later"} if later else {"current"}
+        wanted = {"current", "later", "done", "abandoned"} if show_all else {"later"} if later else {"current"}
         hidden = [i for i in infos if i["category"] not in wanted]
         infos = [i for i in infos if i["category"] in wanted]
     if as_json:
@@ -774,7 +794,8 @@ def todo_command(
     if simu:
         info = infos[0]
         since = f"   (last milestone {info['milestone']} {info['since']})" if info["milestone"] else ""
-        typer.echo(f"{simu}{since}" + (f"   reopened {info['reopened']}" if info["reopened"] else ""))
+        typer.echo(f"{simu}{since}" + (f"   {info['reset']}" if info["reset"] else "")
+                   + ("   ABANDONED" if info["category"] == "abandoned" else ""))
         for step in info["steps"]:
             typer.echo(f"  {SYMBOL[step['state']]} {step['step']} {step['name']:24} {step['date'] or '':10}  "
                        f"{step['detail']}".rstrip())
@@ -790,9 +811,10 @@ def todo_command(
         for warning in info["warnings"]:
             typer.echo(f"{'':32} warning: {warning}")
     waiting = sum(i["category"] == "later" for i in hidden)
-    finished = sum(i["category"] == "done" for i in hidden)
+    finished = sum(i["category"] in ("done", "abandoned") for i in hidden)
     if waiting or finished:
-        typer.echo(f"(+ {waiting} waiting for the delay: etb todo --later; {finished} done: etb todo --all)")
+        typer.echo(f"(+ {waiting} waiting for the delay: etb todo --later; {finished} done or abandoned: "
+                   "etb todo --all)")
 
 
 @app.command("reopen")
@@ -809,6 +831,140 @@ def reopen_command(
         raise typer.Exit(2)
     _milestone(log, simu, "reopened", note=note)
     typer.echo(f"{simu}: reopened; next: QA on $WORK (step 3)")
+
+
+# ---------------------------------------------------------------- abandon, restart: cleaning up a simulation
+
+def _run_dir(work: str, simu: str) -> Path:
+    """$RUN by the workflow's convention: <work directory>/_runs/SIMU, next to WORK."""
+    return Path(work).parent / "_runs" / simu
+
+
+def _not_deletable(path: Path, simu: str, src: str | None) -> str | None:
+    """Why this simulation directory must not be removed (or have files removed from it), or None."""
+    if not path.is_absolute() or len(path.parts) < 4:
+        return "the path is too short to be a simulation directory"
+    if path.name != simu:
+        return f"its name is not {simu}"
+    if src and (path == Path(src) or Path(src).is_relative_to(path) or path.is_relative_to(Path(src))):
+        return "it is, or contains, the source"
+    return None
+
+
+def _remove(paths: list[Path], simu: str, src: str | None) -> list[str]:
+    """Remove these simulation directories, or entries directly inside one, after checking them all."""
+    problems = [(p, why) for p in paths if (why := _not_deletable(p if p.name == simu else p.parent, simu, src))]
+    for p, why in problems:
+        typer.echo(f"etb: not removing {p}: {why}", err=True)
+    if problems:
+        raise typer.Exit(2)
+    removed = []
+    for p in paths:
+        if not p.exists():
+            typer.echo(f"  {p}: not there")
+            continue
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        removed.append(str(p))
+        typer.echo(f"  removed {p}")
+    return removed
+
+
+def _known(simu: str, log: Path) -> tuple[list[dict], dict]:
+    runs = read_runs(log) if log.is_file() else []
+    records = _simulations(log, runs).get(simu)
+    if records is None:
+        typer.echo(f"etb: {simu} has nothing recorded in {log}", err=True)
+        raise typer.Exit(2)
+    return records, steps_of(simu, records, runs, log, 2, _today())
+
+
+DeleteOption = Annotated[bool, typer.Option("--delete", help="also remove the files (see above); never SRC")]
+RunOption = Annotated[Path | None, typer.Option("--run", help="the simulation's RUN directory; default: "
+                                                              "<work dir>/_runs/SIMU")]
+
+
+@app.command("abandon")
+def abandon_command(
+    simu: Annotated[str, typer.Argument(help="simulation name, as used by etb copy")],
+    log: LogOption = DEFAULT_LOG,
+    note: Annotated[str | None, typer.Option(help="why, e.g. wrong simulation, broken time axis")] = None,
+    delete: DeleteOption = False,
+    run_dir: RunOption = None,
+):
+    """Drop a simulation (e.g. the wrong one, or one that must not be published): etb todo no longer
+    lists it (etb todo --all still does). With --delete, its WORK and RUN directories are removed too.
+    SRC is never touched. --delete is refused once the simulation was linked into the DRS."""
+    records, info = _known(simu, log)
+    work = info["work"]
+    paths = [Path(work), run_dir or _run_dir(work, simu)] if work else []
+    removed = []
+    if delete:
+        if any(r["milestone"] == "linked" for r in records):
+            typer.echo(f"etb: {simu} was linked into the DRS: remove its DRS version first; nothing removed",
+                       err=True)
+            raise typer.Exit(2)
+        if not paths:
+            typer.echo(f"etb: {simu} has no WORK recorded (no copied milestone): nothing to remove", err=True)
+        removed = _remove(paths, simu, info["src"])
+    _milestone(log, simu, "abandoned", note=note, removed=removed)
+    typer.echo(f"{simu}: abandoned (etb todo --all still shows it)")
+    if not delete and paths:
+        typer.echo(f"  its files are still there: etb abandon {simu} --delete, or rm -r {' '.join(map(str, paths))}")
+
+
+@app.command("restart")
+def restart_command(
+    simu: Annotated[str, typer.Argument(help="simulation name, as used by etb copy")],
+    from_step: Annotated[int, typer.Option("--from", help="1: from the copy; 3: from QA")],
+    log: LogOption = DEFAULT_LOG,
+    note: Annotated[str | None, typer.Option(help="why")] = None,
+    delete: DeleteOption = False,
+    run_dir: RunOption = None,
+):
+    """Start a simulation again; etb todo only counts what happens from now on.
+
+    \b
+    --from 1  from the copy. Steps 2-5 change WORK in place, so going back means a fresh copy.
+              With --delete, WORK and RUN are removed; then run etb copy SRC WORK again.
+    --from 3  from QA, keeping the copy and the deduplication. With --delete, the QA iterations are
+              removed from RUN (qa_*, fixplan_*, fixlog*). WORK is kept: fixes already applied stay.
+    SRC is never touched. Refused once the simulation is linked into the DRS: for a new version of a
+    published simulation, use etb reopen."""
+    if from_step not in (1, 3):
+        typer.echo("etb: --from is 1 (the copy) or 3 (QA)", err=True)
+        raise typer.Exit(2)
+    records, info = _known(simu, log)
+    steps = {s["step"]: s for s in info["steps"]}
+    if steps[6]["state"] == "done":
+        typer.echo(f"etb: {simu} is linked into the DRS: use etb reopen {simu} for a new version", err=True)
+        raise typer.Exit(2)
+    if from_step == 1 and steps[8]["state"] == "done":
+        typer.echo(f"etb: the source of {simu} was removed: nothing to copy again", err=True)
+        raise typer.Exit(2)
+    if from_step == 3 and steps[4]["state"] == "done" and steps[4]["detail"] != "not needed":
+        typer.echo(f"etb: warning: fixes already applied to WORK are kept; to undo them: etb restart {simu} "
+                   "--from 1", err=True)
+    work = info["work"]
+    removed = []
+    if delete and work:
+        run = run_dir or _run_dir(work, simu)
+        if from_step == 1:
+            if any(r["milestone"] == "linked" for r in records):
+                typer.echo(f"etb: {simu} was linked into the DRS once: remove its DRS version first; "
+                           "nothing removed", err=True)
+                raise typer.Exit(2)
+            removed = _remove([Path(work), run], simu, info["src"])
+        else:
+            iterations = sorted(p for pattern in ("qa_*", "fixplan_*", "fixlog*") for p in run.glob(pattern))
+            removed = _remove(iterations, simu, info["src"])
+    _milestone(log, simu, "restarted", from_step=from_step, note=note, removed=removed)
+    if from_step == 1:
+        typer.echo(f"{simu}: restarted from the copy; next: etb copy {info['src'] or '$SRC'} {work or '$WORK'}")
+    else:
+        typer.echo(f"{simu}: restarted from QA; next: QA iteration 1 on {work or '$WORK'} (step 3)")
 
 
 if __name__ == "__main__":

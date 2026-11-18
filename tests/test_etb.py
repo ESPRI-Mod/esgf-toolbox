@@ -474,3 +474,89 @@ def test_copy_and_run_are_recorded_with_a_heartbeat_removed_at_the_end(tmp_path,
     assert [r["argv"][:2] for r in runs] == [["etb", "copy"], ["true"]] and {r["status"] for r in runs} == {"ok"}
     assert runs[0]["simu"] == "SIM01"
     assert etb._alive_dir(log).is_dir() and not list(etb._alive_dir(log).iterdir())
+
+
+# --- etb abandon / etb restart ---
+
+def layout(tmp_path):
+    """SRC, WORK and RUN of SIM01 on disk, copied on 2026-11-01, with a QA iteration and logs in RUN."""
+    src, work, run_dir = tmp_path / "src" / "SIM01", tmp_path / "work" / "SIM01", tmp_path / "work" / "_runs" / "SIM01"
+    for d in (src, work, run_dir / "qa_1"):
+        d.mkdir(parents=True)
+    for f in (src / "a.nc", work / "a.nc", run_dir / "qa_1" / "qa_result_x.json", run_dir / "fixplan_1.json",
+              run_dir / "fixlog.jsonl", run_dir / "deduplicate.jsonl"):
+        f.write_text("x")
+    log = tmp_path / "work" / "etb-runs.jsonl"
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src=str(src), work=str(work), files=1)
+    return log, src, work, run_dir
+
+
+def cli(log, *args):
+    return runner.invoke(etb.app, [*args, "--log", str(log)])
+
+
+def test_abandon_hides_the_simulation_and_keeps_its_files_without_delete(tmp_path):
+    log, _src, work, _run_dir = layout(tmp_path)
+    result = cli(log, "abandon", "SIM01", "--note", "wrong simulation")
+    assert result.exit_code == 0 and "its files are still there" in result.output and work.exists()
+    assert "SIM01" not in cli(log, "todo").output and "1 done or abandoned" in cli(log, "todo").output
+    info = todo_json(log, "SIM01")
+    assert info["category"] == "abandoned" and info["next"].endswith("wrong simulation")
+    assert "ABANDONED" in cli(log, "todo", "SIM01").output and "SIM01" in cli(log, "todo", "--all").output
+
+
+def test_abandon_delete_removes_work_and_run_never_src(tmp_path):
+    log, src, work, run_dir = layout(tmp_path)
+    result = cli(log, "abandon", "SIM01", "--delete")
+    assert result.exit_code == 0, result.output
+    assert not work.exists() and not run_dir.exists() and (src / "a.nc").exists()
+    assert milestones(log)[-1]["removed"] == [str(work), str(run_dir)]
+
+
+def test_abandon_delete_is_refused_once_linked_or_outside_the_simulation(tmp_path):
+    log, src, work, _run_dir = layout(tmp_path)
+    milestone_line(log, "SIM01", "linked", "2026-11-05")
+    assert cli(log, "abandon", "SIM01", "--delete").exit_code == 2 and work.exists()
+    assert milestones(log)[-1]["milestone"] == "linked"   # nothing recorded
+    other = tmp_path / "x"
+    milestone_line(other, "SIM02", "copied", "2026-11-01", src=str(src), work=str(tmp_path / "work" / "OTHER"))
+    result = cli(other, "abandon", "SIM02", "--delete")
+    assert result.exit_code == 2 and "its name is not SIM02" in result.output
+
+
+def test_restart_from_the_copy_removes_work_and_run_and_starts_again(tmp_path):
+    log, src, work, run_dir = layout(tmp_path)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", str(work), "--only-under", str(work)])
+    result = cli(log, "restart", "SIM01", "--from", "1", "--delete", "--note", "bad copy")
+    assert result.exit_code == 0 and f"next: etb copy {src} {work}" in result.output
+    assert not work.exists() and not run_dir.exists() and src.exists()
+    info, s = steps(log)
+    assert [s[i]["state"] for i in (1, 2)] == ["next", "todo"] and info["reset"].startswith("restarted from step 1")
+    milestone_line(log, "SIM01", "copied", "2026-12-01", src=str(src), work=str(work), files=1)
+    assert steps(log)[1][1]["state"] == "done"
+
+
+def test_restart_from_qa_keeps_work_and_the_deduplication(tmp_path):
+    log, _src, work, run_dir = layout(tmp_path)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", str(work), "--only-under", str(work)])
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{run_dir}/qa_1", str(work)])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{run_dir}/qa_1/r.json"], exit_code=10)
+    run_line(log, "2026-11-04", ["esgf-fix-tool", "apply", "p.json", "--only-under", str(work)])
+    result = cli(log, "restart", "SIM01", "--from", "3", "--delete")
+    assert result.exit_code == 0 and "fixes already applied to WORK are kept" in result.output
+    assert work.exists() and (run_dir / "deduplicate.jsonl").exists()
+    assert not any((run_dir / n).exists() for n in ("qa_1", "fixplan_1.json", "fixlog.jsonl"))
+    _, s = steps(log)
+    assert [s[i]["state"] for i in (1, 2, 3, 4)] == ["done", "done", "next", "todo"]
+
+
+def test_restart_is_refused_once_linked_and_brings_an_abandoned_simulation_back(tmp_path):
+    log, _src, _work, _run_dir = layout(tmp_path)
+    assert cli(log, "restart", "SIM01", "--from", "2").exit_code == 2
+    cli(log, "abandon", "SIM01")
+    cli(log, "restart", "SIM01", "--from", "3")
+    assert todo_json(log, "SIM01")["category"] == "current"
+    milestone_line(log, "SIM01", "linked", "2099-01-01")   # after the restart
+    result = cli(log, "restart", "SIM01", "--from", "3")
+    assert result.exit_code == 2 and "use etb reopen" in result.output
+    assert cli(log, "abandon", "SIM09").exit_code == 2

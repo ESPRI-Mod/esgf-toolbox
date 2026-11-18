@@ -162,6 +162,10 @@ etb done "$SIMU" src-removed > /dev/null || fail "etb done src-removed"
 # apply --break-hardlinks counts as the fix of the new version (step 4)
 check "etb todo: source removed, the new version still to do" \
     bash -c "[[ '$(states)' == 'done next todo done todo todo todo done' ]]"
+etb abandon SIM02 --delete --note "test copy" > abandon.out || fail "etb abandon SIM02 --delete"
+check "etb abandon --delete: SIM02's WORK removed, hidden from etb todo, the source untouched" bash -c \
+    "[ ! -e '$ROOT/work/SIM02' ] && ! etb todo | grep -q SIM02 && etb todo --all | grep -q 'SIM02.*abandoned' \
+     && [ -e '$DATA/CMIP7' ]"
 check "every etb run has its end record" python3 -c "
 import json; r = [json.loads(l) for l in open('$ETB_LOG')]
 s = {x['run_id'] for x in r if x['event'] == 'start'}; e = {x['run_id'] for x in r if x['event'] == 'end'}
