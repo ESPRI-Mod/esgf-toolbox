@@ -779,3 +779,47 @@ def test_todo_resumes_a_dead_shard_or_a_dead_whole_apply(tmp_path):
     assert f"--resume '{RUN_DIR}/fixlog*.jsonl'" in info["command"]
     run_line(log2, "2026-11-04", ["esgf-fix-tool", "apply", plan2, "--only-under", WORK, "--resume", "x.jsonl"])
     assert steps(log2)[1][4]["state"] == "done"   # the resume finished the plan
+
+
+def classified(tmp_path, log, code, summary=None):
+    """SIM01 after QA 1 and a classify exit `code`, with its esgf-fix-tool summary next to the report."""
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    report = tmp_path / "_runs" / "SIM01" / "qa_1" / "qa_result_20261119-1203_abc.json"   # names SIM01, as $RUN does
+    report.parent.mkdir(parents=True)
+    report.write_text("{}")
+    if summary is not None:
+        report.with_name("qa_result_20261119-1203_abc.classify.json").write_text(json.dumps(summary))
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", str(report)], exit_code=code)
+
+
+SUMMARY = {"blocking": {"findings": 8625, "files": 3013, "fix": 960, "unknown": 7619, "fix_missing": 30,
+                        "upstream": 16}, "known_checker_errors": {"E001": 31}, "unknown_checker_errors": 0}
+
+
+def test_the_qa_step_shows_the_classify_summary(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    classified(tmp_path, log, 10, SUMMARY)
+    _, s = steps(log)
+    assert s[3]["detail"] == ("iteration 1: classify exit 10 (known) — fixable 960/8625 · rules or fixes needed "
+                              "7649/8625 · upstream 16 · known checker errors 31")
+
+
+@pytest.mark.parametrize("code", [20, 40])
+def test_a_blocked_qa_moves_on_to_the_known_fixes(tmp_path, code):
+    log = tmp_path / "runs.jsonl"
+    classified(tmp_path, log, code, dict(SUMMARY, unknown_checker_errors=2) if code == 40 else SUMMARY)
+    info, s = steps(log)
+    assert s[3]["state"] == "failed" and s[4]["state"] == "next" and info["current"] == 4
+    assert "meanwhile, the fixable findings" in s[4]["detail"]
+    assert info["command"] == f"tb esgf-fix-tool plan {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json -o {RUN_DIR}/fixplan_1.json"
+    if code == 40:
+        assert "checker crashed on 2 files" in s[3]["detail"] and "run it again" not in s[3]["detail"]
+
+
+def test_no_change_stays_on_the_qa_step(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    classified(tmp_path, log, 30)          # the fixes don't work: no point running them again
+    info, s = steps(log)
+    assert info["current"] == 3 and s[4]["state"] == "todo" and info["command"].startswith("tb0 esgf-fix-tool classify")
