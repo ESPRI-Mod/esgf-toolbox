@@ -661,3 +661,121 @@ def test_todo_suggests_the_copy_job_then_the_check(tmp_path, monkeypatch):
     monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub copy-dsync.sh")
     assert todo_json(log, "SIM07")["command"] == (
         "SIMU=SIM07 ccc_msub copy-dsync.sh   # when it has finished: tb etb copy $SRC $WORK --only $COPY_ONLY")
+
+
+def plan_and_fixlog(tmp_path, run_id, done=2, other=1, total=3):
+    plan, fixlog = tmp_path / "fixplan_1.json", tmp_path / "fixlog.jsonl"
+    plan.write_text(json.dumps({"files": {f"/f{i}.nc": [] for i in range(total)}}))
+    lines = [{"etb_run_id": run_id, "file": f"/f{i}.nc", "status": "failed" if i == 0 else "done"} for i in range(done)]
+    lines += [{"etb_run_id": "older", "file": "/f2.nc", "status": "done"} for _ in range(other)]   # not this run
+    fixlog.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    return str(plan), str(fixlog)
+
+
+@pytest.mark.parametrize("age,state", [(30, "running"), (3600, "dead")])
+def test_todo_shows_how_far_a_running_or_dead_apply_got(tmp_path, age, state):
+    log = tmp_path / "runs.jsonl"
+    copied(log)
+    plan, fixlog = plan_and_fixlog(tmp_path, "ap1")
+    unfinished_run(log, ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--fixlog", fixlog], "ap1",
+                   heartbeat_age=age)
+    info, s = steps(log)
+    assert s[4]["state"] == state and info["current"] == 4
+    assert "2/3 files (67%), 1 failed" in s[4]["detail"]
+    assert ("left" in s[4]["detail"]) == (state == "running")
+
+
+def test_todo_shows_a_running_dry_run_with_its_progress(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-02", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"], exit_code=10)
+    plan, fixlog = plan_and_fixlog(tmp_path, "dry1", done=1, other=0)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])   # before the dry run
+    unfinished_run(log, ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--dry-run", "--fixlog", fixlog],
+                   "dry1", heartbeat_age=10)
+    _, s = steps(log)
+    assert s[4]["state"] == "running" and "dry run running" in s[4]["detail"] and "1/3 files" in s[4]["detail"]
+
+
+def test_todo_suggests_the_apply_job_dry_run_then_for_real(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    job = "SIMU={simu} ccc_msub -r apply-{simu} /s/apply-job.sh"
+    monkeypatch.setenv("ETB_JOB_APPLY", job)
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"], exit_code=10)
+    real = job.replace("{simu}", "SIM01")
+    assert todo_json(log, "SIM01")["command"] == "DRYRUN=1 " + real   # the job writes the plan itself
+    run_line(log, "2026-11-04", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", f"{RUN_DIR}/fixplan_1.json"])
+    assert todo_json(log, "SIM01")["command"] == "DRYRUN=1 " + real
+    run_line(log, "2026-11-04", ["esgf-fix-tool", "apply", f"{RUN_DIR}/fixplan_1.json", "--only-under", WORK,
+                                 "--dry-run"])
+    assert todo_json(log, "SIM01")["command"] == real
+    unfinished_run(log, ["esgf-fix-tool", "apply", f"{RUN_DIR}/fixplan_1.json", "--only-under", WORK], "ap2",
+                   heartbeat_age=3600)
+    info = todo_json(log, "SIM01")
+    assert info["current"] == 4 and info["command"] == "RESUME=1 " + real   # dead: resume with the job
+
+
+def sharded_iteration(tmp_path, log, total=4):
+    """SIM01 at fix iteration 1 (classify exit 10), with a plan of `total` files."""
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-02", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"], exit_code=10)
+    plan = tmp_path / "fixplan_1.json"
+    plan.write_text(json.dumps({"files": {f"/f{i}.nc": [] for i in range(total)}}))
+    return str(plan)
+
+
+def shard_run(log, tmp_path, plan, k, total, files, *, run_id, exit_code=0, ended=True, heartbeat_age=None):
+    fixlog = tmp_path / f"fixlog.shard-{k}.jsonl"
+    with fixlog.open("a") as out:
+        for f in files:
+            out.write(json.dumps({"etb_run_id": run_id, "file": f, "status": "done"}) + "\n")
+    argv = ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--shard", f"{k}/{total}", "--fixlog", str(fixlog)]
+    if ended:
+        run_line(log, "2026-11-03", argv, exit_code=exit_code, run_id=run_id)
+    else:
+        unfinished_run(log, argv, run_id, heartbeat_age=heartbeat_age)
+
+
+def test_todo_waits_for_every_shard_then_suggests_the_next_qa(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_APPLY", "SIMU={simu} ccc_msub /s/apply-job.sh")
+    plan = sharded_iteration(tmp_path, log)
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="s1")
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "shard 2 of 2 still to run: 2/4 files (50%)" in s[4]["detail"]
+    assert info["command"] == "SHARD=2/2 RESUME=1 SIMU=SIM01 ccc_msub /s/apply-job.sh"
+    shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc"], run_id="s2", ended=False, heartbeat_age=10)
+    info, s = steps(log)
+    assert s[4]["state"] == "running" and "shard 2/2 running" in s[4]["detail"] and "3/4 files (75%)" in s[4]["detail"]
+    shard_run(log, tmp_path, plan, 2, 2, ["/f3.nc"], run_id="s2b")
+    info, s = steps(log)
+    assert s[4]["state"] == "done" and "4/4 files (100%)" in s[4]["detail"] and s[3]["state"] == "next"
+    assert info["command"].startswith("tb esgqa $QA_TESTS -o " + f"{RUN_DIR}/qa_2")
+
+
+def test_todo_resumes_a_dead_shard_or_a_dead_whole_apply(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    plan = sharded_iteration(tmp_path, log)
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc"], run_id="s1", ended=False, heartbeat_age=3600)
+    shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
+    info, s = steps(log)
+    assert s[4]["state"] == "dead" and "shard 1/2 stopped" in s[4]["detail"]
+    assert info["command"] == (f"tb esgf-fix-tool apply {plan} --only-under {WORK} --workers 8 --shard 1/2 "
+                               f"--resume '{RUN_DIR}/fixlog*.jsonl' --fixlog {RUN_DIR}/fixlog.shard-1.jsonl")
+    other = tmp_path / "other"
+    other.mkdir()
+    log2 = other / "runs.jsonl"
+    plan2 = sharded_iteration(other, log2)
+    unfinished_run(log2, ["esgf-fix-tool", "apply", plan2, "--only-under", WORK], "w1", heartbeat_age=3600)
+    info, s = steps(log2)
+    assert s[4]["state"] == "dead" and "resume it" in s[4]["detail"]
+    assert f"--resume '{RUN_DIR}/fixlog*.jsonl'" in info["command"]
+    run_line(log2, "2026-11-04", ["esgf-fix-tool", "apply", plan2, "--only-under", WORK, "--resume", "x.jsonl"])
+    assert steps(log2)[1][4]["state"] == "done"   # the resume finished the plan

@@ -581,6 +581,82 @@ def _job(name: str, simu: str) -> str | None:
     return template.replace("{simu}", simu) if template else None
 
 
+def _duration(seconds: float) -> str:
+    return f"{seconds / 3600:.1f} h" if seconds >= 3600 else f"{seconds / 60:.0f} min"
+
+
+def _apply_progress(run: dict, running: bool = False) -> str:
+    """'n/total files (p%), f failed, ~t left' for an apply run: its plan, and its own lines in its fixlog
+    (etb_run_id), so a resubmitted run does not count what an earlier one did. '' if unknown."""
+    argv, cwd = run["argv"], Path(run.get("cwd") or ".")
+    try:
+        fixlog = argv[argv.index("--fixlog") + 1] if "--fixlog" in argv[:-1] else "fixlog.jsonl"
+        total = len(json.loads((cwd / argv[2]).read_text())["files"])
+        mine = [r for r in (json.loads(line) for line in (cwd / fixlog).read_text().splitlines()
+                            if run["run_id"] in line) if r.get("etb_run_id") == run["run_id"]]
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return ""
+    done, failed = len(mine), sum(r.get("status") == "failed" for r in mine)
+    text = f"{done}/{total} files ({100 * done / total:.0f}%)" if total else f"{done} files"
+    text += f", {failed} failed" if failed else ""
+    if running and 0 < done < total:
+        spent = (datetime.now(UTC) - datetime.fromisoformat(run["start"])).total_seconds()
+        text += f", ~{_duration(spent / done * (total - done))} left"
+    return text
+
+
+def _shard(argv: list[str]) -> tuple[int, int] | None:
+    """(k, K) of an apply run with --shard k/K, else None."""
+    value = argv[argv.index("--shard") + 1] if "--shard" in argv[:-1] else next(
+        (a.split("=", 1)[1] for a in argv if a.startswith("--shard=")), None)
+    m = re.fullmatch(r"(\d+)/(\d+)", value or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _plan_path(run: dict) -> str:
+    return str(Path(run.get("cwd") or ".") / run["argv"][2]) if len(run["argv"]) > 2 else ""
+
+
+def _plan_progress(runs: list[dict], running: list[dict]) -> str:
+    """'n/total files (p%), f failed, ~t left' over every apply run of one plan (shards, resumes): each run's
+    own lines in its fixlog (etb_run_id), the latest record of a file winning. '' if unknown."""
+    latest = {}
+    try:
+        total = len(json.loads(Path(_plan_path(runs[-1])).read_text())["files"])
+        for run in runs:
+            argv, cwd = run["argv"], Path(run.get("cwd") or ".")
+            fixlog = cwd / (argv[argv.index("--fixlog") + 1] if "--fixlog" in argv[:-1] else "fixlog.jsonl")
+            if not fixlog.is_file():
+                continue
+            for line in fixlog.read_text().splitlines():
+                if run["run_id"] in line:
+                    record = json.loads(line)
+                    if record.get("etb_run_id") == run["run_id"]:
+                        latest[record["file"]] = record.get("status")
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return ""
+    done, failed = len(latest), sum(status == "failed" for status in latest.values())
+    text = f"{done}/{total} files ({100 * done / total:.0f}%)" if total else f"{done} files"
+    text += f", {failed} failed" if failed else ""
+    rate = 0.0  # files per second of the runs still going on
+    for run in running:
+        spent = (datetime.now(UTC) - datetime.fromisoformat(run["start"])).total_seconds()
+        mine = sum(1 for line in _fixlog_lines(run) if line.get("etb_run_id") == run["run_id"])
+        rate += mine / spent if spent > 0 else 0
+    if rate and done < total:
+        text += f", ~{_duration((total - done) / rate)} left"
+    return text
+
+
+def _fixlog_lines(run: dict) -> list[dict]:
+    argv, cwd = run["argv"], Path(run.get("cwd") or ".")
+    fixlog = cwd / (argv[argv.index("--fixlog") + 1] if "--fixlog" in argv[:-1] else "fixlog.jsonl")
+    try:
+        return [json.loads(line) for line in fixlog.read_text().splitlines() if run["run_id"] in line]
+    except (OSError, ValueError):
+        return []
+
+
 def _rerun(argv: list[str]) -> str:
     """The command line that runs a recorded command again, through tb."""
     return "tb " + shlex.join([Path(argv[0]).name, *argv[1:]])
@@ -678,17 +754,93 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     def classify(k):
         return f"tb esgf-fix-tool classify {report(k)}" + (f" --previous {report(k - 1)}" if k > 1 else "")
 
+    apply_job = _job("APPLY", simu)  # writes the plan if needed, then applies it (DRYRUN=1: dry run)
+
     def apply(plan, dry):
+        if apply_job:
+            return ("DRYRUN=1 " if dry else "") + apply_job
         return (f"tb esgf-fix-tool apply {plan} --only-under {w} --workers 8 "
                 + (f"--dry-run --fixlog {rd}/fixlog.dry-run.jsonl" if dry else f"--fixlog {rd}/fixlog.jsonl"))
 
     put(3, "todo", "QA iteration 1" + ("" if qa_job else " (big simulation: better as a job)"), command=qa(1))
-    n, plan, planned = 0, None, ""
+    def shard_command(k, total, plan_path):
+        if apply_job:
+            return f"SHARD={k}/{total} RESUME=1 {apply_job}"
+        return (f"tb esgf-fix-tool apply {plan_path} --only-under {w} --workers 8 --shard {k}/{total} "
+                f"--resume '{rd}/fixlog*.jsonl' --fixlog {rd}/fixlog.shard-{k}.jsonl")
+
+    def resume_command(plan_path):
+        if apply_job:
+            return f"RESUME=1 {apply_job}"
+        return (f"tb esgf-fix-tool apply {plan_path} --only-under {w} --workers 8 --resume '{rd}/fixlog*.jsonl' "
+                f"--fixlog {rd}/fixlog.jsonl")
+
+    def settle(applies, n):
+        """Step 4 from every apply run of fix iteration n (one plan): a whole run, a resume, or K shards."""
+        if not applies:
+            return
+        plan_path = _plan_path(applies[-1])
+        runs = [r for r in applies if _plan_path(r) == plan_path]
+        states = {r["run_id"]: run_state(r, log) for r in runs}
+        newest = {}  # only the latest attempt of each shard (or of the whole plan) can still be running
+        for r in runs:
+            newest[_shard(r["argv"]) or "whole"] = r
+        running = [r for r in newest.values() if states[r["run_id"]] == "running"]
+        progress = _plan_progress(runs, running)
+        suffix = f": {progress}" if progress else ""
+        whole = [r for r in runs if _shard(r["argv"]) is None]
+        sharded = [r for r in runs if _shard(r["argv"]) is not None]
+        total = _shard(sharded[-1]["argv"])[1] if sharded else 0
+        latest = {}  # shard k -> its latest run
+        for r in sharded:
+            if _shard(r["argv"])[1] == total:
+                latest[_shard(r["argv"])[0]] = r
+        last = runs[-1]
+        complete = (whole and states[whole[-1]["run_id"]] == "ok" and (not sharded or whole[-1] is last)) or (
+            total and len(latest) == total and all(states[r["run_id"]] == "ok" for r in latest.values()))
+        if running:
+            what = (f"apply, fix iteration {n}, shard{'s' if len(running) > 1 else ''} "
+                    + ", ".join(f"{_shard(r['argv'])[0]}/{total}" for r in running) if sharded and
+                    all(_shard(r["argv"]) for r in running) else f"apply, fix iteration {n}")
+            put(4, "running", f"{what} running since {running[0]['start'][:16].replace('T', ' ')}{suffix}",
+                running[0])
+            return
+        if complete:
+            put(4, "done", f"apply, fix iteration {n} (exit 0){suffix}", last)
+            put(3, "next", f"QA iteration {n + 1}", last, qa(n + 1))
+            return
+        if sharded and not (whole and whole[-1] is last):
+            bad = [(k, r) for k, r in sorted(latest.items()) if states[r["run_id"]] != "ok"]
+            missing = [k for k in range(1, total + 1) if k not in latest]
+            if bad:
+                k, r = bad[0]
+                state = states[r["run_id"]]
+                why = "stopped with no end record (killed?)" if state == "dead" else f"exit {r.get('exit_code')}"
+                put(4, state, f"apply, fix iteration {n}, shard {k}/{total} {why}{suffix}", r,
+                    shard_command(k, total, plan_path))
+            else:
+                put(4, "next", f"fix iteration {n}: shard{'s' if len(missing) > 1 else ''} "
+                               f"{', '.join(map(str, missing))} of {total} still to run{suffix}", last,
+                    shard_command(missing[0], total, plan_path))
+            return
+        state = states[last["run_id"]]
+        if state == "dead":
+            put(4, "dead", f"apply, fix iteration {n} stopped with no end record (killed?): resume it{suffix}",
+                last, resume_command(plan_path))
+        else:
+            put(4, "failed", f"apply, fix iteration {n}: exit {last.get('exit_code')}, some files failed{suffix}",
+                last, f"grep '\"status\": \"failed\"' {rd}/fixlog*.jsonl | tail -3")
+
+    n, plan, planned, applies = 0, None, "", []
     for kind, run, start in found:
         if start < window or kind not in ("qa", "classify", "plan", "apply"):
             continue
         number = re.search(r"qa_(\d+)", " ".join(run["argv"]))
         state = run_state(run, log)
+        if kind in ("qa", "classify") and applies:
+            settle(applies, n)
+            applies = []
+            plan = None
         if kind == "qa":
             n = int(number.group(1)) if number else n + 1
             from_run(3, run, f"QA iteration {n}", ok=("next", f"iteration {n}: QA done, now classify", classify(n)))
@@ -707,8 +859,11 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                     put(4, "done", "not needed", run)
             elif code == 10:
                 put(3, "done", f"iteration {n}: classify exit 10 (known)", run)
-                put(4, "next", f"fix iteration {n}: plan the fixes", run,
-                    f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
+                if apply_job:
+                    put(4, "next", f"fix iteration {n}: plan + dry run, as a job", run, apply(None, dry=True))
+                else:
+                    put(4, "next", f"fix iteration {n}: plan the fixes", run,
+                        f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
             else:
                 put(3, "failed", f"iteration {n}: classify exit {code}, {DECISIONS.get(code, 'error')}", run,
                     f"tb0 esgf-fix-tool classify {report(n)} --show 30")
@@ -716,14 +871,23 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             plan, planned = _output(run["argv"]) or f"{rd}/fixplan_{n}.json", start
             put(4, "next", f"fix iteration {n}: fixplan written, dry run first", run, apply(plan, dry=True))
         elif kind == "apply":
-            from_run(4, run, f"apply, fix iteration {n}",
-                     fail=f"apply, fix iteration {n}: exit {run.get('exit_code')}, some files failed",
-                     look=f"grep '\"status\": \"failed\"' {rd}/fixlog.jsonl | tail -3")
-            if state == "ok":
-                plan = None
-                put(3, "next", f"QA iteration {n + 1}", run, qa(n + 1))
+            applies.append(run)
+    settle(applies, n)
+    if applies:
+        plan = None
     if plan and steps[4]["state"] == "next" and previewed("apply", after=planned):
         put(4, "next", f"fix iteration {n}: dry run done, now for real", None, apply(plan, dry=False))
+    # a dry run still going on (or cut) after the last real apply
+    dry = next((r for k, r, start in reversed(previews) if k == "apply" and start >= max(window, planned)), None)
+    if dry and steps[4]["state"] in ("next", "todo") and run_state(dry, log) in ("running", "dead"):
+        progress = _apply_progress(dry, run_state(dry, log) == "running")
+        if run_state(dry, log) == "running":
+            put(4, "running", f"apply dry run running since {dry['start'][:16].replace('T', ' ')}"
+                              + (f": {progress}" if progress else ""), dry)
+        else:
+            put(4, "dead", "apply dry run stopped with no end record (killed?): run it again"
+                           + (f" ({progress})" if progress else ""), dry, apply(plan, dry=True) if apply_job
+                else _rerun(dry["argv"]))
 
     # 5-8: confirmed by milestones; the log says how far the step went before that
     def repack(option):
