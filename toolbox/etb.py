@@ -522,7 +522,7 @@ SYMBOL = {"done": "✓", "next": "▶", "running": "⧗", "dead": "†", "failed
           "waiting": "…", "todo": "·"}
 DECISIONS = {0: "clean", 10: "known", 20: "new_rule: rule or review needed, PR on esgf-fix-tool",
              21: "blocked_upstream: tell the simulation team", 30: "no_change: same fixable findings, tool bug",
-             40: "checker_error: QA failed on some files, run it again"}
+             40: "checker_error: the checker crashed on some files (classify --show 30 says which)"}
 def _under(arg: str, path: str) -> bool:
     return arg == path or arg.startswith(path.rstrip("/") + "/")
 
@@ -655,6 +655,28 @@ def _fixlog_lines(run: dict) -> list[dict]:
         return [json.loads(line) for line in fixlog.read_text().splitlines() if run["run_id"] in line]
     except (OSError, ValueError):
         return []
+
+
+def _classify_summary(run: dict) -> str:
+    """' — fixable 960/8625 · rules or fixes needed 7649/8625 · ...' from the summary esgf-fix-tool >= 0.8 writes
+    next to the report (<report>.classify.json); '' if there is none."""
+    report = next((a for a in run["argv"][2:] if a.endswith(".json") and not a.startswith("-")), None)
+    if report is None:
+        return ""
+    path = Path(run.get("cwd") or ".") / report
+    try:
+        summary = json.loads(path.with_name(path.stem + ".classify.json").read_text())
+        blocking = summary["blocking"]
+        total = blocking["findings"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    need = sum(blocking.get(k, 0) for k in ("unknown", "fix_missing", "review"))
+    text = f" — fixable {blocking.get('fix', 0)}/{total} · rules or fixes needed {need}/{total}"
+    text += f" · upstream {blocking['upstream']}" if blocking.get("upstream") else ""
+    known = sum((summary.get("known_checker_errors") or {}).values())
+    text += f" · known checker errors {known}" if known else ""
+    text += f" · checker crashed on {summary['unknown_checker_errors']} files" if summary.get("unknown_checker_errors") else ""
+    return text
 
 
 def _rerun(argv: list[str]) -> str:
@@ -854,19 +876,24 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             if state in ("running", "dead"):
                 from_run(3, run, f"classify qa_{n}")
             elif code == 0:
-                put(3, "done", f"iteration {n}: classify exit 0 (clean)", run)
+                put(3, "done", f"iteration {n}: classify exit 0 (clean){_classify_summary(run)}", run)
                 if steps[4]["state"] != "done":
                     put(4, "done", "not needed", run)
             elif code == 10:
-                put(3, "done", f"iteration {n}: classify exit 10 (known)", run)
+                put(3, "done", f"iteration {n}: classify exit 10 (known){_classify_summary(run)}", run)
                 if apply_job:
                     put(4, "next", f"fix iteration {n}: plan + dry run, as a job", run, apply(None, dry=True))
                 else:
                     put(4, "next", f"fix iteration {n}: plan the fixes", run,
                         f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
             else:
-                put(3, "failed", f"iteration {n}: classify exit {code}, {DECISIONS.get(code, 'error')}", run,
-                    f"tb0 esgf-fix-tool classify {report(n)} --show 30")
+                put(3, "failed", f"iteration {n}: classify exit {code}, {DECISIONS.get(code, 'error')}"
+                                 f"{_classify_summary(run)}", run, f"tb0 esgf-fix-tool classify {report(n)} --show 30")
+                if code in (20, 21, 40):  # what the tool knows can be fixed meanwhile (not 30: the fixes don't work)
+                    put(4, "next", f"fix iteration {n}: meanwhile, the fixable findings: "
+                                   + ("plan + dry run, as a job" if apply_job else "plan the fixes"), run,
+                        apply(None, dry=True) if apply_job
+                        else f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
         elif kind == "plan" and state == "ok" and steps[4]["state"] == "next":
             plan, planned = _output(run["argv"]) or f"{rd}/fixplan_{n}.json", start
             put(4, "next", f"fix iteration {n}: fixplan written, dry run first", run, apply(plan, dry=True))
@@ -960,6 +987,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     active = [i for i in STEPS_RANGE if steps[i]["state"] in ("running", "dead")]
     current = active[-1] if active else next(
         (i for i in STEPS_RANGE if steps[i]["state"] not in ("done", "skipped")), None)
+    if current == 3 and steps[3]["state"] == "failed" and steps[4]["state"] in ("next", "failed"):
+        current = 4  # QA blocked on what needs a rule, a fix or a checker: the known fixes go on meanwhile
     for i in STEPS_RANGE:  # one ▶ only: the current step
         if i != current and steps[i]["state"] == "next":
             steps[i]["state"] = "todo"

@@ -132,6 +132,12 @@ and RUN (`<work dir>/_runs/SIMU`), since the shell's `$WORK` may be another simu
 real command (deduplicate and apply `--dry-run`, `cmip7repack -x`, `esgdrs make tree`). After a failed or dead
 run, it is that run again, or a look at what failed (`classify --show 30`, the failed lines of the log).
 
+With esgf-fix-tool >= 0.8.0, the QA step also shows what `classify` said, from the summary it leaves next to the
+report (`<report>.classify.json`): `fixable 960/8625 · rules or fixes needed 7649/8625 · upstream 16 · known
+checker errors 31` (blocking findings). When the decision is `new_rule` (20), `blocked_upstream` (21) or
+`checker_error` (40), the QA step stays ✗ but the next action is the fix step: what the tool knows how to fix
+can go on meanwhile (not after `no_change` (30): the fixes did not work).
+
 Heavy steps can be suggested as jobs instead, so they don't run on a login node: when `$ETB_JOB_QA`,
 `$ETB_JOB_APPLY` or `$ETB_JOB_COPY` is set (inside the image), `etb todo` suggests it, with `{simu}` replaced by
 the simulation name:
