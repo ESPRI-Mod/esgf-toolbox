@@ -132,10 +132,27 @@ and RUN (`<work dir>/_runs/SIMU`), since the shell's `$WORK` may be another simu
 real command (deduplicate and apply `--dry-run`, `cmip7repack -x`, `esgdrs make tree`). After a failed or dead
 run, it is that run again, or a look at what failed (`classify --show 30`, the failed lines of the log).
 
-Heavy steps can be suggested as jobs instead, so they don't run on a login node: when `$ETB_JOB_QA` or
-`$ETB_JOB_COPY` is set (inside the image), `etb todo` suggests it for QA on WORK (iteration N, N+1, or resuming
-a dead one) and for the copy (followed by the `etb copy` check), with `{simu}` replaced by the simulation name.
+Heavy steps can be suggested as jobs instead, so they don't run on a login node: when `$ETB_JOB_QA`,
+`$ETB_JOB_APPLY` or `$ETB_JOB_COPY` is set (inside the image), `etb todo` suggests it, with `{simu}` replaced by
+the simulation name:
+
+- `ETB_JOB_QA`: QA on WORK (iteration N, N+1, or resuming a dead one);
+- `ETB_JOB_APPLY`: the fix step, `DRYRUN=1 <job>` first (the job writes the plan if needed), then `<job>`;
+  also after a dead apply;
+- `ETB_JOB_COPY`: the copy, followed by the `etb copy` check.
+
 A site's environment script sets them, e.g. `ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh'`.
+
+While `apply` runs (or after it stopped), the fix step shows how far it got, e.g. `1240/3033 files (41%),
+3 failed, ~2.3 h left`: the files of its plan, against the lines of its fixlog that carry its own `etb_run_id`
+(so a resubmitted run does not count the lines of an earlier one). Same for a dry run.
+
+With esgf-fix-tool >= 0.7.0, a plan can be finished with `apply --resume` or split over K jobs with `--shard k/K`.
+`etb todo` takes every apply run of the fix iteration together: the progress adds up the shards and resumes
+(the latest record of a file wins); the step is done once the whole plan ran, or every shard of the latest split
+did; until then it suggests the missing shard, or resuming the dead one (`--shard k/K --resume
+'<RUN>/fixlog*.jsonl'`, or `SHARD=k/K RESUME=1 <job>` with `$ETB_JOB_APPLY`). Shards skip the automatic ATM/SRF
+deduplication: step 2 covers it.
 
 ```text
 $ etb todo CM6-ESMCO2-FT-esm-pi.01
