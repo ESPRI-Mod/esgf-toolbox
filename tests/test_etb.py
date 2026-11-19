@@ -823,3 +823,36 @@ def test_no_change_stays_on_the_qa_step(tmp_path):
     classified(tmp_path, log, 30)          # the fixes don't work: no point running them again
     info, s = steps(log)
     assert info["current"] == 3 and s[4]["state"] == "todo" and info["command"].startswith("tb0 esgf-fix-tool classify")
+
+
+def test_shards_that_ended_with_failed_files_finish_the_iteration(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    plan = sharded_iteration(tmp_path, log)
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="s1", exit_code=1)   # a file failed
+    shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
+    info, s = steps(log)
+    assert s[4]["state"] == "done" and "some files failed, they come back in QA" in s[4]["detail"]
+    assert s[3]["state"] == "next" and info["command"].startswith(f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_2")
+
+
+def test_a_shard_that_stopped_with_another_error_is_still_flagged(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    plan = sharded_iteration(tmp_path, log)
+    shard_run(log, tmp_path, plan, 1, 2, [], run_id="s1", exit_code=2)                     # e.g. a bad option
+    shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
+    _, s = steps(log)
+    assert s[4]["state"] == "failed" and "shard 1/2 exit 2" in s[4]["detail"]
+
+
+def test_a_dry_run_with_failing_files_moves_on_to_the_real_run(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    plan = sharded_iteration(tmp_path, log)
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
+    fixlog = tmp_path / "fixlog.dry-run.jsonl"
+    fixlog.write_text("".join(json.dumps({"etb_run_id": "d1", "file": f"/f{i}.nc", "status": "failed" if i < 2
+                                          else "done", "dry_run": True}) + "\n" for i in range(4)))
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--dry-run",
+                                 "--fixlog", str(fixlog)], exit_code=1, run_id="d1")
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "dry run done, some files would fail (4/4 files (100%), 2 failed)" in s[4]["detail"]
+    assert "--dry-run" not in info["command"] and info["command"].startswith(f"tb esgf-fix-tool apply {plan}")

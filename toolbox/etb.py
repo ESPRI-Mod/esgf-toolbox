@@ -740,8 +740,10 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         return next(((k, r) for k, r, start in reversed(found) if k in kinds and start >= since), (None, None))
 
     def previewed(kind, after="", everywhere=False):
+        """The latest finished preview of this kind: exit 0, or exit 1 (some files or pairs would fail)."""
         since = max(after, fresh if everywhere else window)
-        return any(k == kind and start >= since and run_state(r, log) == "ok" for k, r, start in previews)
+        return next((r for k, r, start in reversed(previews) if k == kind and start >= since and (
+            run_state(r, log) == "ok" or (run_state(r, log) == "failed" and r.get("exit_code") == 1))), None)
 
     # 1-2: once per simulation, whatever the window
     if "copied" in reached:
@@ -818,8 +820,11 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             if _shard(r["argv"])[1] == total:
                 latest[_shard(r["argv"])[0]] = r
         last = runs[-1]
-        complete = (whole and states[whole[-1]["run_id"]] == "ok" and (not sharded or whole[-1] is last)) or (
-            total and len(latest) == total and all(states[r["run_id"]] == "ok" for r in latest.values()))
+
+        def finished(r):  # to the end: exit 0, or exit 1 = some files failed (they come back in the next QA)
+            return states[r["run_id"]] == "ok" or (states[r["run_id"]] == "failed" and r.get("exit_code") == 1)
+        complete = (whole and finished(whole[-1]) and (not sharded or whole[-1] is last)) or (
+            total and len(latest) == total and all(finished(r) for r in latest.values()))
         if running:
             what = (f"apply, fix iteration {n}, shard{'s' if len(running) > 1 else ''} "
                     + ", ".join(f"{_shard(r['argv'])[0]}/{total}" for r in running) if sharded and
@@ -828,7 +833,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                 running[0])
             return
         if complete:
-            put(4, "done", f"apply, fix iteration {n} (exit 0){suffix}", last)
+            failures = [r for r in (list(latest.values()) if total else [whole[-1]]) if states[r["run_id"]] != "ok"]
+            put(4, "done", f"apply, fix iteration {n} ({'some files failed, they come back in QA' if failures else 'exit 0'})"
+                           f"{suffix}", last)
             put(3, "next", f"QA iteration {n + 1}", last, qa(n + 1))
             return
         if sharded and not (whole and whole[-1] is last):
@@ -902,8 +909,12 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     settle(applies, n)
     if applies:
         plan = None
-    if plan and steps[4]["state"] == "next" and previewed("apply", after=planned):
-        put(4, "next", f"fix iteration {n}: dry run done, now for real", None, apply(plan, dry=False))
+    if plan and steps[4]["state"] == "next" and (dry_done := previewed("apply", after=planned)):
+        would_fail = run_state(dry_done, log) == "failed"
+        progress = _apply_progress(dry_done) if would_fail else ""
+        put(4, "next", f"fix iteration {n}: dry run done"
+                       + (f", some files would fail ({progress}): they stay for the next QA" if would_fail else "")
+                       + ", now for real", None, apply(plan, dry=False))
     # a dry run still going on (or cut) after the last real apply
     dry = next((r for k, r, start in reversed(previews) if k == "apply" and start >= max(window, planned)), None)
     if dry and steps[4]["state"] in ("next", "todo") and run_state(dry, log) in ("running", "dead"):
