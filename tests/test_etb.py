@@ -435,7 +435,7 @@ def test_todo_tells_running_from_dead_by_the_heartbeat(tmp_path, age, state):
     info, s = steps(log)
     assert s[3]["state"] == state and info["current"] == 3
     strip = runner.invoke(etb.app, ["todo", "--log", str(log)]).output.split()[1]
-    assert strip == "✓·" + etb.SYMBOL[state] + "·····"   # running or dead comes first; step 2 not run yet
+    assert strip == "✓·" + etb.SYMBOL[state] + "·······"   # running or dead comes first; step 2 not run yet
 
 
 def test_todo_shows_a_copy_in_progress(tmp_path):
@@ -456,12 +456,12 @@ def test_published_waits_then_reopen_starts_again_from_qa(tmp_path, monkeypatch)
     for milestone, day in (("fixed", "2026-11-04"), ("linked", "2026-11-05"), ("published", "2026-11-06")):
         milestone_line(log, "SIM01", milestone, day)
     info, s = steps(log)
-    assert info["category"] == "later" and s[8]["state"] == "waiting" and s[7]["state"] == "done"
+    assert info["category"] == "later" and s[10]["state"] == "waiting" and s[9]["state"] == "done"
     result = runner.invoke(etb.app, ["reopen", "SIM01", "--log", str(log), "--note", "v2: comment"])
     assert result.exit_code == 0 and "reopened" in result.output
     info, s = steps(log)
     assert info["category"] == "current" and info["current"] == 3 and info["reopened"]
-    assert [s[i]["state"] for i in range(1, 9)] == ["done", "done", "next"] + ["todo"] * 5
+    assert [s[i]["state"] for i in range(1, 11)] == ["done", "done", "next"] + ["todo"] * 7
     assert runner.invoke(etb.app, ["reopen", "SIM09", "--log", str(log)]).exit_code == 2
 
 
@@ -472,8 +472,8 @@ def test_todo_detail_lists_every_step(tmp_path):
     assert out[0].startswith("SIM01") and "last milestone copied 2026-11-01" in out[0]
     assert out[1].split()[:3] == ["✓", "1", "copy"] and "copied, 3 files" in out[1]
     assert out[2].split()[:3] == ["▶", "2", "deduplicate"]
-    assert out[9] == "  -> step 2 deduplicate: dry run first"
-    assert out[10] == (f"     tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --dry-run "
+    assert out[11] == "  -> step 2 deduplicate: dry run first"
+    assert out[12] == (f"     tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --dry-run "
                        f"--fixlog {RUN_DIR}/deduplicate.preview.jsonl")
 
 
@@ -618,9 +618,12 @@ def test_todo_gives_the_command_of_every_later_step(tmp_path, monkeypatch):
     run_line(log, "2026-11-08", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"], exit_code=20)
     assert command().startswith("tb0 esgf-fix-tool classify") and command().endswith("--final --show 30")
     run_line(log, "2026-11-09", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"])
-    assert command().startswith("tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir " + RUN_DIR)
-    run_line(log, "2026-11-09", ["esgmapfile", "make", "--outdir", f"{RUN_DIR}/mapfiles"])
-    assert command() == "tb etb done SIM01 published"
+    assert command() == f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {WORK}/Mapfiles --max-processes 8"
+    assert todo_json(log, "SIM01")["current"] == 8
+    run_line(log, "2026-11-09", ["esgmapfile", "make", "--directory", "/drs/x", "--outdir", f"{WORK}/Mapfiles"])
+    info = todo_json(log, "SIM01")
+    assert info["current"] == 9 and info["command"] == "tb etb done SIM01 published"
+    assert "publish from the ESGF VM with " + f"{WORK}/Mapfiles/*.map" in info["next"]
     milestone_line(log, "SIM01", "published", "2026-11-10")
     assert command() == "rm -r /data/src/SIM01 && tb etb done SIM01 src-removed"
 
@@ -856,3 +859,26 @@ def test_a_dry_run_with_failing_files_moves_on_to_the_real_run(tmp_path):
     info, s = steps(log)
     assert s[4]["state"] == "next" and "dry run done, some files would fail (4/4 files (100%), 2 failed)" in s[4]["detail"]
     assert "--dry-run" not in info["command"] and info["command"].startswith(f"tb esgf-fix-tool apply {plan}")
+
+
+def test_mapfiles_after_the_final_gate_as_a_job_and_counted(tmp_path, monkeypatch):
+    log, work = tmp_path / "runs.jsonl", tmp_path / "work" / "SIM01"
+    (work / "Mapfiles").mkdir(parents=True)
+    monkeypatch.setenv("ETB_JOB_MAPFILE", "SIMU={simu} ccc_msub /s/mapfile-job.sh")
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src="/data/src/SIM01", work=str(work), files=1)
+    for milestone, day in (("fixed", "2026-11-02"), ("linked", "2026-11-03")):
+        milestone_line(log, "SIM01", milestone, day)
+    run_line(log, "2026-11-04", ["esgqa", "-o", f"{tmp_path}/work/_runs/SIM01/qa_final", "/drs/MIP-DRS7/x"])
+    run_line(log, "2026-11-04", ["esgf-fix-tool", "classify", f"{tmp_path}/work/_runs/SIM01/qa_final/r.json",
+                                 "--final"], exit_code=20)
+    info, s = steps(log)
+    assert s[7]["state"] == "failed" and info["current"] == 7 and info["command"].endswith("--final --show 30")
+    run_line(log, "2026-11-05", ["esgf-fix-tool", "classify", f"{tmp_path}/work/_runs/SIM01/qa_final/r.json", "--final"])
+    info, s = steps(log)
+    assert s[7]["state"] == "done" and info["current"] == 8
+    assert info["command"] == "SIMU=SIM01 ccc_msub /s/mapfile-job.sh"
+    for name in ("a.v20261120.map", "b.v20261120.map"):
+        (work / "Mapfiles" / name).write_text("x")
+    run_line(log, "2026-11-06", ["esgmapfile", "make", "-p", "cmip7", "--outdir", str(work / "Mapfiles")])
+    info, s = steps(log)
+    assert s[8]["state"] == "done" and s[8]["detail"] == f"2 mapfiles in {work}/Mapfiles" and info["current"] == 9

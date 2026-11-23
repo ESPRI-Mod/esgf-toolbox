@@ -267,7 +267,7 @@ MILESTONES = {
     "copied": "deduplicate ATM/SRF, then QA -> fix loop until classify exits 0 (steps 2-5)",
     "fixed": "esgdrs make upgrade --link into the DRS (step 6)",
     "linked": "final QA gate, mapfiles, publication (step 7)",
-    "published": "wait for the delay, then rm -r the source (step 8)",
+    "published": "wait for the delay, then rm -r the source (step 10)",
     "src-removed": "nothing: done",
 }
 
@@ -515,8 +515,8 @@ def missing_evidence(records: list[dict], runs: list[dict], window: str = "") ->
 # Previews (--dry-run, esgdrs make tree, cmip7repack -x) never make a step done; they only move the
 # suggested command on to the real one. Each step carries the command to run next, ready to copy-paste.
 
-STEPS = ["copy", "deduplicate", "QA", "fix", "repack", "DRS", "final QA + publication", "rm SRC"]
-MILESTONE_STEP = {"copied": 1, "fixed": 5, "linked": 6, "published": 7, "src-removed": 8}
+STEPS = ["copy", "deduplicate", "QA", "fix", "repack", "DRS", "final QA", "mapfiles", "publication", "rm SRC"]
+MILESTONE_STEP = {"copied": 1, "fixed": 5, "linked": 6, "published": 9, "src-removed": 10}
 PERMANENT = ("copied", "src-removed")  # done once per simulation, kept by etb reopen
 SYMBOL = {"done": "✓", "next": "▶", "running": "⧗", "dead": "†", "failed": "✗", "skipped": "–",
           "waiting": "…", "todo": "·"}
@@ -693,7 +693,7 @@ def _output(argv: list[str]) -> str | None:
 
 def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months: int, today: date) -> dict:
     """Each step of one simulation: state, detail, date and the command to run; the current step."""
-    # reopen / restart start a new window: steps 3-8 (or, after restart --from 1, every step) only count
+    # reopen / restart start a new window: steps 3-10 (or, after restart --from 1, every step) only count
     # what happened after it
     resets = sorted((r for r in records if r["milestone"] in ("reopened", "restarted")), key=lambda r: r["time"])
     window = resets[-1]["time"] if resets else ""
@@ -954,37 +954,50 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     else:
         put(6, "todo", "preview the DRS tree first", command=f"tb esgdrs make tree -p $PROJECT --root $DRS_ROOT {w}")
     final = f"{rd}/qa_final/qa_result_*[0-9a-f].json"
-    if "published" in reached:
-        put(7, "done", "milestone published", reached["published"])
+    # 7 final QA: the gate on the DRS, done when classify --final exits 0
+    kind, run = last("final-qa", "final-classify")
+    if kind == "final-qa":
+        from_run(7, run, "final QA", ok=("next", "final QA done: the final gate",
+                                         f"tb esgf-fix-tool classify {final} --final"))
+    elif kind == "final-classify" and run_state(run, log) in ("running", "dead"):
+        from_run(7, run, "classify --final")
+    elif kind == "final-classify" and run_state(run, log) == "ok":
+        put(7, "done", f"final gate passed (classify --final exit 0){_classify_summary(run)}", run)
+    elif kind == "final-classify":
+        code = run.get("exit_code")
+        put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}{_classify_summary(run)}", run,
+            f"tb0 esgf-fix-tool classify {final} --final --show 30")
     else:
-        kind, run = last("final-qa", "final-classify", "mapfile")
-        if kind == "final-qa":
-            from_run(7, run, "final QA", ok=("next", "final QA done: the final gate",
-                                             f"tb esgf-fix-tool classify {final} --final"))
-        elif kind == "final-classify" and run_state(run, log) == "ok":
-            put(7, "next", "final gate passed: the mapfiles", run,
-                f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {rd}/mapfiles --version $VERSION")
-        elif kind == "final-classify" and run.get("exit_code") not in (None, 0) and run.get("status") != "killed":
-            code = run.get("exit_code")
-            put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}", run,
-                f"tb0 esgf-fix-tool classify {final} --final --show 30")
-        elif kind:
-            from_run(7, run, "final QA" if kind != "mapfile" else "esgmapfile make",
-                     ok=("next", "mapfiles written: publish from the ESGF VM, then record it",
-                         f"tb etb done {simu} published"))
-        else:
-            put(7, "todo", "final QA on the DRS", command=f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
+        put(7, "todo", "final QA on the DRS", command=f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
+    # 8 mapfiles: one per dataset, flat in WORK/Mapfiles, for the publication
+    mapdir = f"{w}/Mapfiles"
+    mapfile_job = _job("MAPFILE", simu)
+    if (run := last("mapfile")[1]):
+        maps = len(list(Path(mapdir).glob("*.map"))) if work else 0
+        from_run(8, run, "esgmapfile make", ok=("done", f"{maps} mapfiles in {mapdir}"))
+        if steps[8]["state"] == "dead" and mapfile_job:
+            steps[8]["command"] = mapfile_job
+    else:
+        put(8, "todo", f"one mapfile per dataset, flat in {mapdir} (checksums: better as a job)",
+            command=mapfile_job or f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {mapdir} "
+                                   f"--max-processes 8")
+    # 9 publication: from the ESGF VM, outside the image
+    if "published" in reached:
+        put(9, "done", "milestone published", reached["published"])
+    else:
+        put(9, "todo", f"publish from the ESGF VM with {mapdir}/*.map, then record it",
+            command=f"tb etb done {simu} published")
     removable = None
     if "src-removed" in reached:
-        put(8, "done", "milestone src-removed", reached["src-removed"])
+        put(10, "done", "milestone src-removed", reached["src-removed"])
     elif "published" in reached:
         removable = _add_months(date.fromisoformat(reached["published"]["time"][:10]), months)
         days = (removable - today).days
         if days <= 0:
-            put(8, "next", f"the source can be removed since {removable}",
+            put(10, "next", f"the source can be removed since {removable}",
                 command=f"rm -r {src} && tb etb done {simu} src-removed")
         else:
-            put(8, "waiting", f"rm -r the source possible from {removable} (in {days} days)")
+            put(10, "waiting", f"rm -r the source possible from {removable} (in {days} days)")
 
     # a milestone vouches for the steps before it, even those the log does not show
     milestones = [m for m in reached if m != "src-removed"]
@@ -1238,7 +1251,7 @@ def restart_command(
     if steps[6]["state"] == "done":
         typer.echo(f"etb: {simu} is linked into the DRS: use etb reopen {simu} for a new version", err=True)
         raise typer.Exit(2)
-    if from_step == 1 and steps[8]["state"] == "done":
+    if from_step == 1 and steps[10]["state"] == "done":
         typer.echo(f"etb: the source of {simu} was removed: nothing to copy again", err=True)
         raise typer.Exit(2)
     if from_step == 3 and steps[4]["state"] == "done" and steps[4]["detail"] != "not needed":

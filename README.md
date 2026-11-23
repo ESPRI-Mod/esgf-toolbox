@@ -113,15 +113,15 @@ etb todo                            # one line per simulation that needs somethi
 etb todo $SIMU                      # that simulation, step by step
 etb todo --later                    # published, waiting for the delay before rm SRC
 etb todo --all                      # every simulation, finished ones included
-etb reopen $SIMU --note "v2: ..."   # a new version: steps 3-8 start again from now
+etb reopen $SIMU --note "v2: ..."   # a new version: steps 3-10 start again from now
 etb abandon $SIMU [--delete]        # drop it (wrong simulation...); --delete removes WORK and RUN
 etb restart $SIMU --from 1|3        # start again from the copy (1) or from QA (3)
 ```
 
 ```text
-CM6-ESMCO2-FT-esm-pi.01          ✓✓✗✓····  step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
+CM6-ESMCO2-FT-esm-pi.01          ✓✓✗✓······  step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
                                  tb0 esgf-fix-tool classify /ccc/work/.../_runs/CM6-ESMCO2-FT-esm-pi.01/qa_2/qa_result_*[0-9a-f].json --show 30
-CM6-ESMCO2-FT-hist.02            ✓✓▶·····  step 3 QA: QA iteration 1 (big simulation: the qa-job.sh job)
+CM6-ESMCO2-FT-hist.02            ✓✓▶·······  step 3 QA: QA iteration 1 (big simulation: the qa-job.sh job)
                                  tb esgqa $QA_TESTS -o /ccc/work/.../_runs/CM6-ESMCO2-FT-hist.02/qa_1 /ccc/work/.../CM6-ESMCO2-FT-hist.02
 (+ 1 waiting for the delay: etb todo --later; 0 done or abandoned: etb todo --all)
 ```
@@ -169,16 +169,19 @@ CM6-ESMCO2-FT-esm-pi.01   (last milestone copied 2026-11-02)
   ✓ 4 fix                      2026-11-05  apply, fix iteration 1 (exit 0)
   · 5 repack
   · 6 DRS
-  · 7 final QA + publication
-  · 8 rm SRC
+  · 7 final QA
+  · 8 mapfiles
+  · 9 publication
+  · 10 rm SRC
   -> step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
      tb0 esgf-fix-tool classify /ccc/work/.../_runs/CM6-ESMCO2-FT-esm-pi.01/qa_2/qa_result_*[0-9a-f].json --show 30
 ```
 
 `✓` done, `▶` next, `⧗` running, `†` dead, `✗` failed or blocked, `–` skipped (a later milestone was recorded
 anyway), `…` waiting for the delay, `·` not yet. The steps are read from the milestones and from the commands
-recorded in the log: deduplicate, the QA -> fix loop (iteration number, `classify` decision; done when `classify`
-exits 0), repack, esgdrs, final QA and mapfiles. Previews never count (`--dry-run`, `esgdrs make tree`,
+recorded in the log: 1 copy, 2 deduplicate, 3-4 the QA -> fix loop (iteration number, `classify` decision; done when `classify`
+exits 0), 5 repack, 6 esgdrs, 7 the final QA gate (`classify --final` exits 0), 8 the mapfiles (one per dataset, flat in
+`<WORK>/Mapfiles`, for the publication; `$ETB_JOB_MAPFILE` for a job), 9 publication, 10 rm SRC. Previews never count (`--dry-run`, `esgdrs make tree`,
 `cmip7repack -x`). A command belongs to a simulation when it names its WORK directory or a path with the
 simulation name as a whole component (`$RUN/qa_1/...`). Something running or dead comes first in the next action.
 
@@ -202,7 +205,7 @@ simulation and is not, or does not contain, the source. Both refuse `--delete` o
 the DRS, and `restart` refuses a linked simulation altogether: for a new version, use `etb reopen`.
 
 `etb reopen` is for a new version of a published simulation (a fix with `apply --break-hardlinks`): from then on,
-steps 3-8 only count what happens after it, so the old QA, DRS and publication no longer show as done. copy,
+steps 3-10 only count what happens after it, so the old QA, DRS and publication no longer show as done. copy,
 deduplicate and `src-removed` are kept.
 
 `etb copy` is safe to run again: a file already in WORK with the same size is kept, one with a different size is
@@ -341,7 +344,7 @@ offline, every step through `etb` as an operator would, and checks each one:
 | `esgmapfile` | one mapfile for the version |
 | `etb todo` along the way | a dry run does not count; the QA step shows the `classify` decision; `etb copy` is recorded as a run, its heartbeat removed |
 | `etb done` …, `etb todo` | published, source removable 2 months later |
-| `etb reopen`, new version | steps 3-8 to do again, copy kept; after `rm`, `src-removed` stays done |
+| `etb reopen`, new version | steps 3-10 to do again, copy kept; after `rm`, `src-removed` stays done |
 | `etb abandon SIM02 --delete` | its WORK removed, hidden from `etb todo`, shown as abandoned by `--all`, the source untouched |
 | new version | `apply` refuses the hard-linked file; with `--break-hardlinks`, WORK gets the fix and the published DRS file is unchanged |
 
