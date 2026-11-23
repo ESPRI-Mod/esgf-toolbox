@@ -136,7 +136,7 @@ etb reopen "$SIMU" --note "v2: comment on ta" > /dev/null || fail "etb reopen"
 states() { etb todo "$SIMU" --json | python3 -c "import json,sys; print(' '.join(s['state'] for s in json.load(sys.stdin)['steps']))"; }
 # (deduplicate only ran as a dry run here, so step 2 is still to do)
 check "etb todo: reopened, QA to publication to do again, copy kept" \
-    bash -c "[[ '$(states)' == 'done next todo todo todo todo todo todo' ]]"
+    bash -c "[[ '$(states)' == 'done next todo todo todo todo todo todo todo todo' ]]"
 python3 - "$WORK_FILE" "$RUN/fixplan_v2.json" <<'EOF'
 import json, sys
 step = {"rule": "C001", "fix": "set_var_attr", "params": {"var": "ta", "attr": "comment", "value": "new version"}}
@@ -161,7 +161,7 @@ rm -r "$SRC"
 etb done "$SIMU" src-removed > /dev/null || fail "etb done src-removed"
 # apply --break-hardlinks counts as the fix of the new version (step 4)
 check "etb todo: source removed, the new version still to do" \
-    bash -c "[[ '$(states)' == 'done next todo done todo todo todo done' ]]"
+    bash -c "[[ '$(states)' == 'done next todo done todo todo todo todo todo done' ]]"
 etb abandon SIM02 --delete --note "test copy" > abandon.out || fail "etb abandon SIM02 --delete"
 check "etb abandon --delete: SIM02's WORK removed, hidden from etb todo, the source untouched" bash -c \
     "[ ! -e '$ROOT/work/SIM02' ] && ! etb todo | grep -q SIM02 && etb todo --all | grep -q 'SIM02.*abandoned' \
