@@ -395,6 +395,25 @@ def test_todo_follows_the_qa_fix_loop_and_ignores_previews(tmp_path):
     assert todo_json(log, "SIM01")["command"] == "tb etb done SIM01 fixed"
 
 
+def test_the_real_repack_as_a_job_when_the_site_has_one(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_REPACK", "SIMU={simu} ccc_msub /s/repack-job.sh")
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"])
+    info, _ = steps(log)
+    assert info["current"] == 5 and "cmip7repack -x' _ " + WORK in info["command"]  # the preview stays light
+    run_line(log, "2026-11-04", ["sh", "-c", "find $1 | xargs -0 cmip7repack -x", "_", WORK])
+    assert todo_json(log, "SIM01")["command"] == "SIMU=SIM01 ccc_msub /s/repack-job.sh"
+    real = ["sh", "-c", "find $1 | xargs -0 -n 20 -P $2 cmip7repack -o", "_", WORK, "16"]
+    run_line(log, "2026-11-05", real, exit_code=1)  # some files failed: the job again
+    info, s = steps(log)
+    assert s[5]["state"] == "failed" and info["command"] == "SIMU=SIM01 ccc_msub /s/repack-job.sh"
+    run_line(log, "2026-11-06", real)
+    assert todo_json(log, "SIM01")["command"] == "tb etb done SIM01 fixed"
+
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)

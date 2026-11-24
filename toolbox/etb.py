@@ -575,7 +575,7 @@ def run_state(run: dict, log: Path) -> str:
 
 
 def _job(name: str, simu: str) -> str | None:
-    """A site's job command for a heavy step, from $ETB_JOB_QA / $ETB_JOB_COPY ({simu} is replaced), or None.
+    """A site's job command for a heavy step, from $ETB_JOB_QA / $ETB_JOB_COPY / ... ({simu} is replaced), or None.
     E.g. ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh' (set by a site's environment script)."""
     template = os.environ.get(f"ETB_JOB_{name}", "").strip()
     return template.replace("{simu}", simu) if template else None
@@ -931,12 +931,15 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     def repack(option):
         return f"tb sh -c 'find \"$1\" -name \"*.nc\" -print0 | xargs -0 cmip7repack {option}' _ {w}"
 
+    repack_job = _job("REPACK", simu)  # the real run (-o) as a job, files in parallel
     if "fixed" in reached:
         put(5, "done", "milestone fixed", reached["fixed"])
     elif (run := last("repack")[1]):
         from_run(5, run, "cmip7repack", ok=("next", "repacked: record the milestone", f"tb etb done {simu} fixed"))
+        if steps[5]["state"] in ("dead", "failed") and repack_job:
+            steps[5]["command"] = repack_job
     elif previewed("repack"):
-        put(5, "todo", "preview done: now for real, in place (-o)", command=repack("-o"))
+        put(5, "todo", "preview done: now for real, in place (-o)", command=repack_job or repack("-o"))
     else:
         put(5, "todo", "preview first (-x)", command=repack("-x"))
     if "linked" in reached:
