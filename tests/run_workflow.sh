@@ -76,6 +76,9 @@ for severity in sorted(set(before) | set(after), reverse=True):
         print(f"   {severity:>8}  {outcome:12} {nb:6} {na:6}")
         if outcome == "fix" and na:
             problems.append(f"severity {severity}: {na} fixable finding(s) still reported after apply")
+        elif outcome == "waived" and na > nb:
+            # a fix may bring a finding a reviewed rule accepts (e.g. C003 -> proleptic_gregorian -> C077)
+            print(f"   note: severity {severity}: {na - nb} new waived finding(s) after apply (accepted by a rule)")
         elif na > nb:
             problems.append(f"severity {severity}: {na - nb} new '{outcome}' finding(s) after apply")
 if not any(b.get("fix") for b in before.values()):
