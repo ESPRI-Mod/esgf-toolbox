@@ -880,6 +880,23 @@ def test_a_dry_run_with_failing_files_moves_on_to_the_real_run(tmp_path):
     assert "--dry-run" not in info["command"] and info["command"].startswith(f"tb esgf-fix-tool apply {plan}")
 
 
+def test_the_final_qa_as_a_job_when_the_site_has_one(tmp_path, monkeypatch):
+    log, work = tmp_path / "runs.jsonl", tmp_path / "work" / "SIM01"
+    work.mkdir(parents=True)
+    monkeypatch.setenv("ETB_JOB_FINAL_QA", "SIMU={simu} FINAL=1 ccc_msub /s/qa-job.sh")
+    milestone_line(log, "SIM01", "copied", "2026-11-01", src="/data/src/SIM01", work=str(work), files=1)
+    for milestone, day in (("fixed", "2026-11-02"), ("linked", "2026-11-03")):
+        milestone_line(log, "SIM01", milestone, day)
+    info, s = steps(log)
+    assert info["current"] == 7 and info["command"] == "SIMU=SIM01 FINAL=1 ccc_msub /s/qa-job.sh"
+    final = ["esgqa", "-o", f"{tmp_path}/work/_runs/SIM01/qa_final", "/drs/MIP-DRS7/x"]
+    run_line(log, "2026-11-04", final, exit_code=1)  # cut or crashed: the job again
+    info, s = steps(log)
+    assert s[7]["state"] == "failed" and info["command"] == "SIMU=SIM01 FINAL=1 ccc_msub /s/qa-job.sh"
+    run_line(log, "2026-11-05", final)
+    assert todo_json(log, "SIM01")["command"].endswith("--final")
+
+
 def test_mapfiles_after_the_final_gate_as_a_job_and_counted(tmp_path, monkeypatch):
     log, work = tmp_path / "runs.jsonl", tmp_path / "work" / "SIM01"
     (work / "Mapfiles").mkdir(parents=True)
