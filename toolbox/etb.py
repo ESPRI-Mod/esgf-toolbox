@@ -974,7 +974,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}{_classify_summary(run)}", run,
             f"tb0 esgf-fix-tool classify {final} --final --show 30")
     else:
-        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
+        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa $QA_TESTS -b /files/ -o {rd}/qa_final $DRS_SIMU")
     # 8 mapfiles: one per dataset, flat in WORK/Mapfiles, for the publication
     mapdir = f"{w}/Mapfiles"
     mapfile_job = _job("MAPFILE", simu)
