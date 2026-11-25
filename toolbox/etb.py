@@ -959,9 +959,12 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     final = f"{rd}/qa_final/qa_result_*[0-9a-f].json"
     # 7 final QA: the gate on the DRS, done when classify --final exits 0
     kind, run = last("final-qa", "final-classify")
+    final_job = _job("FINAL_QA", simu)  # esgqa on the DRS then classify --final, as a job
     if kind == "final-qa":
         from_run(7, run, "final QA", ok=("next", "final QA done: the final gate",
                                          f"tb esgf-fix-tool classify {final} --final"))
+        if steps[7]["state"] in ("dead", "failed") and final_job:
+            steps[7]["command"] = final_job
     elif kind == "final-classify" and run_state(run, log) in ("running", "dead"):
         from_run(7, run, "classify --final")
     elif kind == "final-classify" and run_state(run, log) == "ok":
@@ -971,7 +974,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}{_classify_summary(run)}", run,
             f"tb0 esgf-fix-tool classify {final} --final --show 30")
     else:
-        put(7, "todo", "final QA on the DRS", command=f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
+        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa $QA_TESTS -o {rd}/qa_final $DRS_SIMU")
     # 8 mapfiles: one per dataset, flat in WORK/Mapfiles, for the publication
     mapdir = f"{w}/Mapfiles"
     mapfile_job = _job("MAPFILE", simu)
