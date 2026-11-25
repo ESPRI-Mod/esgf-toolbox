@@ -180,7 +180,7 @@ CM6-ESMCO2-FT-esm-pi.01   (last milestone copied 2026-11-02)
 `✓` done, `▶` next, `⧗` running, `†` dead, `✗` failed or blocked, `–` skipped (a later milestone was recorded
 anyway), `…` waiting for the delay, `·` not yet. The steps are read from the milestones and from the commands
 recorded in the log: 1 copy, 2 deduplicate, 3-4 the QA -> fix loop (iteration number, `classify` decision; done when `classify`
-exits 0), 5 repack (the real run as `$ETB_JOB_REPACK` when set, files in parallel), 6 esgdrs, 7 the final QA gate (`classify --final` exits 0; `$ETB_JOB_FINAL_QA` for a job), 8 the mapfiles (one per dataset, flat in
+exits 0), 5 repack (the real run as `$ETB_JOB_REPACK` when set, files in parallel), 6 esgdrs, 7 the final QA gate on the version directories of the DRS (`esgqa -b /files/`; `classify --final` exits 0; `$ETB_JOB_FINAL_QA` for a job), 8 the mapfiles (one per dataset, flat in
 `<WORK>/Mapfiles`, for the publication; `$ETB_JOB_MAPFILE` for a job), 9 publication, 10 rm SRC. Previews never count (`--dry-run`, `esgdrs make tree`,
 `cmip7repack -x`). A command belongs to a simulation when it names its WORK directory or a path with the
 simulation name as a whole component (`$RUN/qa_1/...`). Something running or dead comes first in the next action.

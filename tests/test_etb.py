@@ -631,7 +631,7 @@ def test_todo_gives_the_command_of_every_later_step(tmp_path, monkeypatch):
     run_line(log, "2026-11-06", ["esgdrs", "make", "upgrade", "-p", "cmip7", "--link", WORK])
     assert command() == "tb etb done SIM01 linked --note v$VERSION"
     milestone_line(log, "SIM01", "linked", "2026-11-07")
-    assert command() == f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_final $DRS_SIMU"
+    assert command() == f"tb esgqa $QA_TESTS -b /files/ -o {RUN_DIR}/qa_final $DRS_SIMU"
     run_line(log, "2026-11-08", ["esgqa", "-o", f"{RUN_DIR}/qa_final", "/drs/MIP-DRS7/x"])
     assert command() == f"tb esgf-fix-tool classify {RUN_DIR}/qa_final/qa_result_*[0-9a-f].json --final"
     run_line(log, "2026-11-08", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"], exit_code=20)
