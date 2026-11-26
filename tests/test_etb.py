@@ -388,7 +388,7 @@ def test_todo_follows_the_qa_fix_loop_and_ignores_previews(tmp_path):
     run_line(log, "2026-11-05", ["esgf-fix-tool", "apply", "p.json", "--only-under", WORK])
     info, s = steps(log)
     assert s[4]["state"] == "done" and s[3]["state"] == "next"
-    assert info["command"] == f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_2 {WORK}"
+    assert info["command"] == f"tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o {RUN_DIR}/qa_2 {WORK}"
     run_line(log, "2026-11-06", ["esgqa", "-o", f"{RUN_DIR}/qa_2", WORK])
     assert todo_json(log, "SIM01")["command"].endswith(f"--previous {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json")
     run_line(log, "2026-11-06", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_2/qa_result_y.json"])
@@ -639,7 +639,7 @@ def test_todo_gives_the_command_of_every_later_step(tmp_path, monkeypatch):
     run_line(log, "2026-11-06", ["esgdrs", "make", "upgrade", "-p", "cmip7", "--link", WORK])
     assert command() == "tb etb done SIM01 linked --note v$VERSION"
     milestone_line(log, "SIM01", "linked", "2026-11-07")
-    assert command() == f"tb esgqa $QA_TESTS -b /files/ -o {RUN_DIR}/qa_final $DRS_SIMU"
+    assert command() == f"tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -b /files/ -o {RUN_DIR}/qa_final $DRS_SIMU"
     run_line(log, "2026-11-08", ["esgqa", "-o", f"{RUN_DIR}/qa_final", "/drs/MIP-DRS7/x"])
     assert command() == f"tb esgf-fix-tool classify {RUN_DIR}/qa_final/qa_result_*[0-9a-f].json --final"
     run_line(log, "2026-11-08", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_final/r.json", "--final"], exit_code=20)
@@ -786,7 +786,7 @@ def test_todo_waits_for_every_shard_then_suggests_the_next_qa(tmp_path, monkeypa
     shard_run(log, tmp_path, plan, 2, 2, ["/f3.nc"], run_id="s2b")
     info, s = steps(log)
     assert s[4]["state"] == "done" and "4/4 files (100%)" in s[4]["detail"] and s[3]["state"] == "next"
-    assert info["command"].startswith("tb esgqa $QA_TESTS -o " + f"{RUN_DIR}/qa_2")
+    assert info["command"].startswith("tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o " + f"{RUN_DIR}/qa_2")
 
 
 
@@ -928,7 +928,7 @@ def test_shards_that_ended_with_failed_files_finish_the_iteration(tmp_path):
     shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
     info, s = steps(log)
     assert s[4]["state"] == "done" and "some files failed, they come back in QA" in s[4]["detail"]
-    assert s[3]["state"] == "next" and info["command"].startswith(f"tb esgqa $QA_TESTS -o {RUN_DIR}/qa_2")
+    assert s[3]["state"] == "next" and info["command"].startswith(f"tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o {RUN_DIR}/qa_2")
 
 
 def test_a_shard_that_stopped_with_another_error_is_still_flagged(tmp_path):

@@ -122,13 +122,14 @@ etb restart $SIMU --from 1|3        # start again from the copy (1) or from QA (
 CM6-ESMCO2-FT-esm-pi.01          ✓✓✗✓······  step 3 QA: iteration 2: classify exit 20, new_rule: rule or review needed, PR on esgf-fix-tool
                                  tb0 esgf-fix-tool classify /ccc/work/.../_runs/CM6-ESMCO2-FT-esm-pi.01/qa_2/qa_result_*[0-9a-f].json --show 30
 CM6-ESMCO2-FT-hist.02            ✓✓▶·······  step 3 QA: QA iteration 1 (big simulation: the qa-job.sh job)
-                                 tb esgqa $QA_TESTS -o /ccc/work/.../_runs/CM6-ESMCO2-FT-hist.02/qa_1 /ccc/work/.../CM6-ESMCO2-FT-hist.02
+                                 tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o /ccc/work/.../_runs/CM6-ESMCO2-FT-hist.02/qa_1 /ccc/work/.../CM6-ESMCO2-FT-hist.02
 (+ 1 waiting for the delay: etb todo --later; 0 done or abandoned: etb todo --all)
 ```
 
 Under each simulation is the command to run next, ready to copy-paste. It names that simulation's own SRC, WORK
-and RUN (`<work dir>/_runs/SIMU`), since the shell's `$WORK` may be another simulation's, and uses `$QA_TESTS`,
-`$PROJECT`, `$DRS_ROOT`, `$VERSION`, `$DRS_SIMU`, `$COPY_ONLY` from `etb-env.sh`. A preview moves it on to the
+and RUN (`<work dir>/_runs/SIMU`), since the shell's `$WORK` may be another simulation's, writes out the QA tests
+(`-t wcrp_cmip7:1.0 -t cf:1.11`, right even without `etb-env.sh`), and uses `$PROJECT`, `$DRS_ROOT`, `$VERSION`,
+`$DRS_SIMU`, `$COPY_ONLY` from `etb-env.sh`. A preview moves it on to the
 real command (deduplicate and apply `--dry-run`, `cmip7repack -x`, `esgdrs make tree`). After a failed or dead
 run, it is that run again, or a look at what failed (`classify --show 30`, the failed lines of the log).
 
