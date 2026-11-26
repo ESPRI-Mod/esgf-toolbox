@@ -616,6 +616,12 @@ def _shard(argv: list[str]) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def _repack_shard(argv: list[str]) -> tuple[int, int] | None:
+    """(k, K) of a repack-job.sh shard: its file list is $RUN/repack[-x].list.shard-<k>of<K>; else None."""
+    m = re.search(r"repack(?:-x)?\.list\.shard-(\d+)of(\d+)", " ".join(argv))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def _plan_path(run: dict) -> str:
     return str(Path(run.get("cwd") or ".") / run["argv"][2]) if len(run["argv"]) > 2 else ""
 
@@ -967,16 +973,71 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         return f"tb sh -c 'find \"$1\" -name \"*.nc\" -print0 | xargs -0 cmip7repack {option}' _ {w}"
 
     repack_job = _job("REPACK", simu)  # the real run (-o) as a job, files in parallel
+    # over several jobs, run on the login node: the preview (DRYRUN=1, cmip7repack -x) and the real run
+    repack_shards = _job("REPACK_SHARDS", simu)
+
+    def repack_group(kind_runs):
+        """The latest attempt: one whole run, or the latest run of each of K shards; (runs, K)."""
+        if not kind_runs:
+            return [], 0
+        shard = _repack_shard(kind_runs[-1]["argv"])
+        if shard is None:
+            return kind_runs[-1:], 0
+        latest = {}
+        for r in kind_runs:
+            if (s := _repack_shard(r["argv"])) and s[1] == shard[1]:
+                latest[s[0]] = r
+        return [latest[k] for k in sorted(latest)], shard[1]
+
+    def repack_shards_state(group, total, preview):
+        """For K shards: (state, detail, source, command) while they are not all finished, else None."""
+        states = {r["run_id"]: run_state(r, log) for r in group}
+        what = f"cmip7repack{' preview (-x)' if preview else ''}"
+
+        def finished(r):  # a preview may end with exit 1 (some files would fail), a real run only with 0
+            return states[r["run_id"]] == "ok" or (preview and states[r["run_id"]] == "failed"
+                                                    and r.get("exit_code") == 1)
+        running = [r for r in group if states[r["run_id"]] == "running"]
+        if running:
+            ks = ", ".join(f"{_repack_shard(r['argv'])[0]}/{total}" for r in running)
+            return ("running", f"{what}, shard{'s' if len(running) > 1 else ''} {ks} running since "
+                               f"{running[0]['start'][:16].replace('T', ' ')}", running[0], "")
+        if all(finished(r) for r in group) and len(group) == total:
+            return None
+        bad = next((r for r in group if not finished(r)), None)
+        k = _repack_shard(bad["argv"])[0] if bad else next(
+            k for k in range(1, total + 1) if k not in {_repack_shard(r["argv"])[0] for r in group})
+        again = (f"DRYRUN=1 SHARD={k}/{total} {repack_job}" if preview else f"SHARD={k}/{total} RESUME=1 {repack_job}"
+                 ) if repack_job else ""
+        if bad is None:
+            return "next", f"{what}, shard {k}/{total} still to run", None, again
+        state = states[bad["run_id"]]
+        why = "stopped with no end record (killed?)" if state == "dead" else f"exit {bad.get('exit_code')}"
+        return state, f"{what}, shard {k}/{total} {why}", bad, again or _rerun(bad["argv"])
+
+    reals = [r for k, r, start in found if k == "repack" and start >= window]
+    tries = [r for k, r, start in previews if k == "repack" and start >= window]
     if "fixed" in reached:
         put(5, "done", "milestone fixed", reached["fixed"])
-    elif (run := last("repack")[1]):
+    elif reals and (group := repack_group(reals))[1]:
+        pending = repack_shards_state(*group, preview=False)
+        if pending:
+            put(5, *pending[:3], command=pending[3])
+        else:
+            put(5, "next", f"repacked ({group[1]} shards): record the milestone", group[0][-1],
+                f"tb etb done {simu} fixed")
+    elif reals:
+        run = reals[-1]
         from_run(5, run, "cmip7repack", ok=("next", "repacked: record the milestone", f"tb etb done {simu} fixed"))
-        if steps[5]["state"] in ("dead", "failed") and repack_job:
-            steps[5]["command"] = repack_job
-    elif previewed("repack"):
-        put(5, "todo", "preview done: now for real, in place (-o)", command=repack_job or repack("-o"))
+        if steps[5]["state"] in ("dead", "failed") and (repack_shards or repack_job):
+            steps[5]["command"] = f"RESUME=1 {repack_shards}" if repack_shards else repack_job
+    elif tries and (group := repack_group(tries))[1] and (pending := repack_shards_state(*group, preview=True)):
+        put(5, *pending[:3], command=pending[3])
+    elif tries and (group[1] or previewed("repack")):
+        put(5, "todo", "preview done: now for real, in place (-o)", command=repack_shards or repack_job or repack("-o"))
     else:
-        put(5, "todo", "preview first (-x)", command=repack("-x"))
+        put(5, "todo", "preview first (-x)" + (", as jobs" if repack_shards else ""),
+            command=f"DRYRUN=1 {repack_shards}" if repack_shards else repack("-x"))
     if "linked" in reached:
         put(6, "done", f"milestone linked {reached['linked'].get('note') or ''}".strip(), reached["linked"])
     elif (run := last("drs")[1]):

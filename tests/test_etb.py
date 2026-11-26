@@ -422,6 +422,64 @@ def test_the_real_repack_as_a_job_when_the_site_has_one(tmp_path, monkeypatch):
     assert todo_json(log, "SIM01")["command"] == "tb etb done SIM01 fixed"
 
 
+
+def repack_shard(log, day, k, total, *, preview=False, run_id, exit_code=0, ended=True, heartbeat_age=None):
+    """One shard of repack-job.sh as recorded: sh -c 'xargs ... cmip7repack "$3" < "$1"' _ LIST CORES -o|-x"""
+    lst = f"{RUN_DIR}/repack{'-x' if preview else ''}.list.shard-{k}of{total}"
+    argv = ["sh", "-c", 'xargs -d "\\n" -n 1 -P "$2" cmip7repack "$3" < "$1"', "_", lst, "16",
+            "-x" if preview else "-o"]
+    if ended:
+        run_line(log, day, argv, exit_code=exit_code, run_id=run_id)
+    else:
+        unfinished_run(log, argv, run_id, heartbeat_age=heartbeat_age)
+
+
+def clean_qa(log, monkeypatch):
+    monkeypatch.setenv("ETB_JOB_REPACK", "SIMU={simu} ccc_msub /s/repack-job.sh")
+    monkeypatch.setenv("ETB_JOB_REPACK_SHARDS", "SIMU={simu} SHARDS=auto bash /s/repack-job.sh")
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"])
+
+
+def test_the_repack_preview_and_real_run_over_shards(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    clean_qa(log, monkeypatch)
+    info, s = steps(log)
+    assert "preview first (-x), as jobs" in s[5]["detail"]
+    assert info["command"] == "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
+    repack_shard(log, "2026-11-04", 1, 2, preview=True, run_id="x1")
+    repack_shard(log, "2026-11-04", 2, 2, preview=True, run_id="x2", ended=False, heartbeat_age=10)
+    info, s = steps(log)
+    assert s[5]["state"] == "running" and "cmip7repack preview (-x), shard 2/2 running" in s[5]["detail"]
+    repack_shard(log, "2026-11-04", 2, 2, preview=True, run_id="x2b")
+    info, s = steps(log)
+    assert "preview done: now for real" in s[5]["detail"]
+    assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
+    repack_shard(log, "2026-11-05", 1, 2, run_id="o1")
+    info, s = steps(log)   # shard 2 not run yet: the milestone must wait
+    assert s[5]["state"] == "next" and "shard 2/2 still to run" in s[5]["detail"]
+    assert info["command"] == "SHARD=2/2 RESUME=1 SIMU=SIM01 ccc_msub /s/repack-job.sh"
+    repack_shard(log, "2026-11-05", 2, 2, run_id="o2", exit_code=1)   # some files failed
+    info, s = steps(log)
+    assert s[5]["state"] == "failed" and "shard 2/2 exit 1" in s[5]["detail"]
+    assert info["command"] == "SHARD=2/2 RESUME=1 SIMU=SIM01 ccc_msub /s/repack-job.sh"
+    repack_shard(log, "2026-11-06", 2, 2, run_id="o2b")
+    info, s = steps(log)
+    assert "repacked (2 shards): record the milestone" in s[5]["detail"]
+    assert info["command"] == "tb etb done SIM01 fixed"
+
+
+def test_a_killed_repack_preview_shard_is_run_again(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    clean_qa(log, monkeypatch)
+    repack_shard(log, "2026-11-04", 1, 3, preview=True, run_id="x1", ended=False, heartbeat_age=3600)
+    repack_shard(log, "2026-11-04", 2, 3, preview=True, run_id="x2")
+    info, s = steps(log)
+    assert s[5]["state"] == "dead" and "shard 1/3 stopped" in s[5]["detail"]
+    assert info["command"] == "DRYRUN=1 SHARD=1/3 SIMU=SIM01 ccc_msub /s/repack-job.sh"
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)
