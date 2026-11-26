@@ -270,7 +270,7 @@ def test_todo_new_simulation_suggests_the_copy_job(tmp_path, monkeypatch):
     log = tmp_path / "runs.jsonl"   # not even created yet
     monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub -r dsync-{simu} copy-dsync.sh")
     output = runner.invoke(etb.app, ["todo", "SIM09", "--log", str(log)]).output
-    assert "SIMU=SIM09 ccc_msub -r dsync-SIM09 copy-dsync.sh   # when it has finished: tb etb copy" in output
+    assert "     SIMU=SIM09 ccc_msub -r dsync-SIM09 copy-dsync.sh\n" in output
 
 
 def test_run_log_ignores_milestones(tmp_path, manifest):
@@ -683,14 +683,13 @@ def test_todo_suggests_the_site_jobs_for_heavy_steps_when_configured(tmp_path, m
     assert todo_json(log, "SIM01")["command"] == "SIMU=SIM01 ccc_msub -r qa-SIM01 /s/qa-job.sh"   # QA N+1
 
 
-def test_todo_suggests_the_copy_job_then_the_check(tmp_path, monkeypatch):
+def test_todo_suggests_the_copy_job_alone(tmp_path, monkeypatch):
     log = tmp_path / "runs.jsonl"
     milestone_line(log, "SIM07", "abandoned", "2026-11-01")
     milestone_line(log, "SIM07", "restarted", "2026-11-02", from_step=1)
     assert todo_json(log, "SIM07")["command"] == "tb etb copy $SRC $WORK --only $COPY_ONLY"
     monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub copy-dsync.sh")
-    assert todo_json(log, "SIM07")["command"] == (
-        "SIMU=SIM07 ccc_msub copy-dsync.sh   # when it has finished: tb etb copy $SRC $WORK --only $COPY_ONLY")
+    assert todo_json(log, "SIM07")["command"] == "SIMU=SIM07 ccc_msub copy-dsync.sh"  # it runs the check itself
 
 
 def plan_and_fixlog(tmp_path, run_id, done=2, other=1, total=3):

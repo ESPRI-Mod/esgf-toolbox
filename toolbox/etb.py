@@ -753,9 +753,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     else:
         check = "tb etb copy $SRC $WORK --only $COPY_ONLY"
         job = _job("COPY", simu)
-        put(1, "todo", "copy SRC to WORK: the copy job, then the check (it records the milestone)" if job
-            else "copy SRC to WORK (big simulation: a parallel copy job first, then this to check)",
-            command=f"{job}   # when it has finished: {check}" if job else check)
+        put(1, "todo", "copy SRC to WORK: the copy job (it checks the copy and records the milestone at the end)"
+            if job else "copy SRC to WORK (big simulation: a parallel copy job first, then this to check)",
+            command=job or check)
     if (run := last("deduplicate", everywhere=True)[1]):
         from_run(2, run, "deduplicate", fail="deduplicate exit 1: some pairs failed, both files kept",
                  look=f"grep '\"status\": \"failed\"' {rd}/deduplicate.jsonl | tail -5")
