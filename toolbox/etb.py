@@ -87,6 +87,9 @@ def _append(log: Path, record: dict) -> None:
 
 
 HEARTBEAT_SECONDS = 60
+# the QA tests, written out in the suggested esgqa commands: right even in a shell without etb-env.sh (whose
+# $QA_TESTS is the same default; tb does not pass it into the image)
+QA_TESTS = "-t wcrp_cmip7:1.0 -t cf:1.11"
 ALIVE_WITHIN = 5 * 60  # a run with no "end" record and no heartbeat for this long is dead
 
 
@@ -712,7 +715,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             if kind:
                 (previews if kind[1] else found).append((kind[0], run, run.get("start", "")))
     # Commands name this simulation's own paths: the shell's $WORK / $RUN may be another simulation's.
-    # $QA_TESTS, $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU, $COPY_ONLY come from etb-env.sh.
+    # $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU, $COPY_ONLY come from etb-env.sh; the QA tests are written out.
     w = work or "$WORK"
     rd = str(_run_dir(work, simu)) if work else "$RUN"
     src = reached.get("copied", {}).get("src") or "$SRC"
@@ -773,7 +776,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     qa_job = _job("QA", simu)  # finds the iteration itself, resumes a cut run, then runs classify
 
     def qa(k):
-        return qa_job or f"tb esgqa $QA_TESTS -o {rd}/qa_{k} {w}"
+        return qa_job or f"tb esgqa {QA_TESTS} -o {rd}/qa_{k} {w}"
 
     def classify(k):
         return f"tb esgf-fix-tool classify {report(k)}" + (f" --previous {report(k - 1)}" if k > 1 else "")
@@ -1006,7 +1009,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}{_classify_summary(run)}", run,
             f"tb0 esgf-fix-tool classify {final} --final --show 30")
     else:
-        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa $QA_TESTS -b /files/ -o {rd}/qa_final $DRS_SIMU")
+        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa {QA_TESTS} -b /files/ -o {rd}/qa_final $DRS_SIMU")
     # 8 mapfiles: one per dataset, flat in WORK/Mapfiles, for the publication
     mapdir = f"{w}/Mapfiles"
     mapfile_job = _job("MAPFILE", simu)
@@ -1113,7 +1116,7 @@ def todo_command(
     Steps: ✓ done  ▶ next  ⧗ running  † dead (no end record, no heartbeat)  ✗ failed or blocked
            – skipped (a later milestone was recorded)  … waiting (delay before rm SRC)  · not yet
     Under each simulation: the command to run next, with its own paths, ready to copy-paste (it uses
-    $QA_TESTS, $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU from etb-env.sh). A step is read from the
+    $PROJECT, $DRS_ROOT, $VERSION, $DRS_SIMU from etb-env.sh; the QA tests are written out). A step is read from the
     milestones and from the commands recorded by tb / etb run; previews (--dry-run, esgdrs make tree,
     cmip7repack -x) do not make a step done, they move the command on to the real one. Warns when a milestone has no matching
     command in the log (e.g. 'linked' but no esgdrs --link run)."""
