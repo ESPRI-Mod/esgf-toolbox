@@ -1087,9 +1087,8 @@ def todo_command(
     command in the log (e.g. 'linked' but no esgdrs --link run)."""
     runs = read_runs(log) if log.is_file() else []
     found = _simulations(log, runs)
-    if simu and simu not in found:
-        typer.echo(f"{simu}: nothing recorded yet (start with: etb copy SRC WORK)")
-        return
+    if simu:
+        found.setdefault(simu, [])  # a new simulation: every step to do, step 1 with its command (the copy job)
     if not found:
         typer.echo(f"etb: no milestone in {log} yet (start with: etb copy SRC WORK)")
         return
