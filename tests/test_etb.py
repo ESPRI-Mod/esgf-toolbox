@@ -789,6 +789,73 @@ def test_todo_waits_for_every_shard_then_suggests_the_next_qa(tmp_path, monkeypa
     assert info["command"].startswith("tb esgqa $QA_TESTS -o " + f"{RUN_DIR}/qa_2")
 
 
+
+def dry_shard(log, tmp_path, plan, k, total, files, *, run_id, exit_code=0, ended=True, heartbeat_age=None, failed=()):
+    fixlog = tmp_path / f"fixlog.dry-run.shard-{k}.jsonl"
+    with fixlog.open("a") as out:
+        for f in files:
+            out.write(json.dumps({"etb_run_id": run_id, "file": f, "dry_run": True,
+                                  "status": "failed" if f in failed else "done"}) + "\n")
+    argv = ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--workers", "16", "--shard", f"{k}/{total}",
+            "--dry-run", "--fixlog", str(fixlog)]
+    if ended:
+        run_line(log, "2026-11-03", argv, exit_code=exit_code, run_id=run_id)
+    else:
+        unfinished_run(log, argv, run_id, heartbeat_age=heartbeat_age)
+
+
+SHARDS_JOB = "SIMU={simu} SHARDS=auto bash /s/apply-job.sh"
+
+
+def test_todo_suggests_the_shard_launcher_for_the_dry_run_and_the_real_apply(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_APPLY", "SIMU={simu} ccc_msub /s/apply-job.sh")
+    monkeypatch.setenv("ETB_JOB_APPLY_SHARDS", SHARDS_JOB)
+    plan = sharded_iteration(tmp_path, log)
+    info, s = steps(log)
+    assert "plan + dry run, as jobs" in s[4]["detail"]
+    assert info["command"] == "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
+    dry_shard(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="d1")
+    dry_shard(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="d2")
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "dry run done, now for real" in s[4]["detail"]
+    assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
+
+
+def test_todo_waits_for_every_dry_run_shard(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_APPLY", "SIMU={simu} ccc_msub /s/apply-job.sh")
+    monkeypatch.setenv("ETB_JOB_APPLY_SHARDS", SHARDS_JOB)
+    plan = sharded_iteration(tmp_path, log)
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
+    dry_shard(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="d1")
+    dry_shard(log, tmp_path, plan, 2, 2, ["/f1.nc"], run_id="d2", ended=False, heartbeat_age=10)
+    info, s = steps(log)
+    assert s[4]["state"] == "running" and "apply dry run (2/2 shards) running" in s[4]["detail"]
+    assert "3/4 files (75%)" in s[4]["detail"]
+    # the second shard killed: run that shard's dry run again
+    dry_shard(log, tmp_path, plan, 2, 2, [], run_id="d2b", ended=False, heartbeat_age=3600)
+    info, s = steps(log)
+    assert s[4]["state"] == "dead" and "apply dry run, shard 2/2 stopped" in s[4]["detail"]
+    assert info["command"] == "DRYRUN=1 SHARD=2/2 SIMU=SIM01 ccc_msub /s/apply-job.sh"
+    # done, with files that would fail (exit 1): on to the real apply
+    dry_shard(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="d2c", exit_code=1, failed={"/f3.nc"})
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "some files would fail (4/4 files (100%), 1 failed)" in s[4]["detail"]
+    assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
+
+
+def test_a_missing_dry_run_shard_is_still_to_run(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    monkeypatch.setenv("ETB_JOB_APPLY", "SIMU={simu} ccc_msub /s/apply-job.sh")
+    plan = sharded_iteration(tmp_path, log)
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
+    dry_shard(log, tmp_path, plan, 1, 3, ["/f0.nc"], run_id="d1")
+    info, s = steps(log)
+    assert s[4]["state"] == "next" and "apply dry run, shard 2/3 still to run" in s[4]["detail"]
+    assert info["command"] == "DRYRUN=1 SHARD=2/3 SIMU=SIM01 ccc_msub /s/apply-job.sh"
+
 def test_todo_resumes_a_dead_shard_or_a_dead_whole_apply(tmp_path):
     log = tmp_path / "runs.jsonl"
     plan = sharded_iteration(tmp_path, log)
