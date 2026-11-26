@@ -262,7 +262,15 @@ def test_todo_with_nothing_recorded(tmp_path):
     log = tmp_path / "runs.jsonl"
     assert "no milestone" in runner.invoke(etb.app, ["todo", "--log", str(log)]).output
     milestone_line(log, "SIM01", "copied", "2026-11-01")
-    assert "nothing recorded yet" in runner.invoke(etb.app, ["todo", "SIM09", "--log", str(log)]).output
+    output = runner.invoke(etb.app, ["todo", "SIM09", "--log", str(log)]).output
+    assert "▶ 1 copy" in output and "tb etb copy $SRC $WORK --only $COPY_ONLY" in output
+
+
+def test_todo_new_simulation_suggests_the_copy_job(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"   # not even created yet
+    monkeypatch.setenv("ETB_JOB_COPY", "SIMU={simu} ccc_msub -r dsync-{simu} copy-dsync.sh")
+    output = runner.invoke(etb.app, ["todo", "SIM09", "--log", str(log)]).output
+    assert "SIMU=SIM09 ccc_msub -r dsync-SIM09 copy-dsync.sh   # when it has finished: tb etb copy" in output
 
 
 def test_run_log_ignores_milestones(tmp_path, manifest):
