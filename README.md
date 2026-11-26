@@ -145,6 +145,10 @@ the simulation name:
 - `ETB_JOB_QA`: QA on WORK (iteration N, N+1, or resuming a dead one);
 - `ETB_JOB_APPLY`: the fix step, `DRYRUN=1 <job>` first (the job writes the plan if needed), then `<job>`;
   also after a dead apply;
+- `ETB_JOB_APPLY_SHARDS`: the same over several jobs, suggested instead of `ETB_JOB_APPLY` for the dry run and
+  the real apply (e.g. `SIMU={simu} SHARDS=auto bash /path/apply-job.sh`, run on the login node: it writes the
+  plan if needed and submits the shards). A dry run, like a real apply, is done when all its shards are; a shard
+  that was killed, failed or never ran is suggested again on its own (`DRYRUN=1 SHARD=k/K <ETB_JOB_APPLY>`);
 - `ETB_JOB_COPY`: the copy; the job ends with the `etb copy` check, which records the milestone `copied`.
 
 A site's environment script sets them, e.g. `ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh'`.

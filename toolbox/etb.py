@@ -779,10 +779,12 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         return f"tb esgf-fix-tool classify {report(k)}" + (f" --previous {report(k - 1)}" if k > 1 else "")
 
     apply_job = _job("APPLY", simu)  # writes the plan if needed, then applies it (DRYRUN=1: dry run)
+    # the same over several jobs: run on the login node, it writes the plan if needed and submits the shards
+    shards_job = _job("APPLY_SHARDS", simu)
 
     def apply(plan, dry):
-        if apply_job:
-            return ("DRYRUN=1 " if dry else "") + apply_job
+        if shards_job or apply_job:
+            return ("DRYRUN=1 " if dry else "") + (shards_job or apply_job)
         return (f"tb esgf-fix-tool apply {plan} --only-under {w} --workers 8 "
                 + (f"--dry-run --fixlog {rd}/fixlog.dry-run.jsonl" if dry else f"--fixlog {rd}/fixlog.jsonl"))
 
@@ -888,8 +890,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                     put(4, "done", "not needed", run)
             elif code == 10:
                 put(3, "done", f"iteration {n}: classify exit 10 (known){_classify_summary(run)}", run)
-                if apply_job:
-                    put(4, "next", f"fix iteration {n}: plan + dry run, as a job", run, apply(None, dry=True))
+                if shards_job or apply_job:
+                    put(4, "next", f"fix iteration {n}: plan + dry run, as {'jobs' if shards_job else 'a job'}", run,
+                        apply(None, dry=True))
                 else:
                     put(4, "next", f"fix iteration {n}: plan the fixes", run,
                         f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
@@ -898,8 +901,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                                  f"{_classify_summary(run)}", run, f"tb0 esgf-fix-tool classify {report(n)} --show 30")
                 if code in (20, 21, 40):  # what the tool knows can be fixed meanwhile (not 30: the fixes don't work)
                     put(4, "next", f"fix iteration {n}: meanwhile, the fixable findings: "
-                                   + ("plan + dry run, as a job" if apply_job else "plan the fixes"), run,
-                        apply(None, dry=True) if apply_job
+                                   + (f"plan + dry run, as {'jobs' if shards_job else 'a job'}"
+                                      if shards_job or apply_job else "plan the fixes"), run,
+                        apply(None, dry=True) if shards_job or apply_job
                         else f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json")
         elif kind == "plan" and state == "ok" and steps[4]["state"] == "next":
             plan, planned = _output(run["argv"]) or f"{rd}/fixplan_{n}.json", start
@@ -909,23 +913,51 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     settle(applies, n)
     if applies:
         plan = None
-    if plan and steps[4]["state"] == "next" and (dry_done := previewed("apply", after=planned)):
-        would_fail = run_state(dry_done, log) == "failed"
-        progress = _apply_progress(dry_done) if would_fail else ""
-        put(4, "next", f"fix iteration {n}: dry run done"
-                       + (f", some files would fail ({progress}): they stay for the next QA" if would_fail else "")
-                       + ", now for real", None, apply(plan, dry=False))
-    # a dry run still going on (or cut) after the last real apply
-    dry = next((r for k, r, start in reversed(previews) if k == "apply" and start >= max(window, planned)), None)
-    if dry and steps[4]["state"] in ("next", "todo") and run_state(dry, log) in ("running", "dead"):
-        progress = _apply_progress(dry, run_state(dry, log) == "running")
-        if run_state(dry, log) == "running":
-            put(4, "running", f"apply dry run running since {dry['start'][:16].replace('T', ' ')}"
-                              + (f": {progress}" if progress else ""), dry)
-        else:
+    # the dry run of the current plan: one whole run, or K shards (DRYRUN=1 SHARDS=... bash apply-job.sh)
+    dries, total = [], 0
+    for k, r, start in previews:
+        if k == "apply" and start >= max(window, planned):
+            dries.append(r)
+    if dries and (shard := _shard(dries[-1]["argv"])):
+        total = shard[1]
+        latest = {}  # shard k -> its latest dry run
+        for r in dries:
+            if (s := _shard(r["argv"])) and s[1] == total:
+                latest[s[0]] = r
+        dries = [latest[k] for k in sorted(latest)]
+    elif dries:
+        dries = dries[-1:]
+    if dries and steps[4]["state"] in ("next", "todo"):
+        states = {r["run_id"]: run_state(r, log) for r in dries}
+
+        def dry_finished(r):  # to the end: exit 0, or exit 1 = some files would fail
+            return states[r["run_id"]] == "ok" or (states[r["run_id"]] == "failed" and r.get("exit_code") == 1)
+
+        running = [r for r in dries if states[r["run_id"]] == "running"]
+        progress = _plan_progress(dries, running)
+        what = f"apply dry run{f' ({len(dries)}/{total} shards)' if total else ''}"
+        if running:
+            put(4, "running", f"{what} running since {running[0]['start'][:16].replace('T', ' ')}"
+                              + (f": {progress}" if progress else ""), running[0])
+        elif all(dry_finished(r) for r in dries) and (not total or len(dries) == total):
+            if plan and steps[4]["state"] == "next":
+                would_fail = any(states[r["run_id"]] == "failed" for r in dries)
+                put(4, "next", f"fix iteration {n}: dry run done"
+                               + (f", some files would fail ({progress}): they stay for the next QA"
+                                  if would_fail else "") + ", now for real", None, apply(plan, dry=False))
+        elif total:
+            bad = next((r for r in dries if not dry_finished(r)), None)
+            missing = [k for k in range(1, total + 1) if k not in {_shard(r["argv"])[0] for r in dries}]
+            k = _shard(bad["argv"])[0] if bad else missing[0]
+            why = ("stopped with no end record (killed?)" if states[bad["run_id"]] == "dead"
+                   else f"exit {bad.get('exit_code')}") if bad else "still to run"
+            put(4, "dead" if bad and states[bad["run_id"]] == "dead" else "failed" if bad else "next",
+                f"apply dry run, shard {k}/{total} {why}" + (f": {progress}" if progress else ""), bad,
+                f"DRYRUN=1 SHARD={k}/{total} {apply_job}" if apply_job else _rerun(bad["argv"]) if bad else "")
+        elif states[dries[0]["run_id"]] == "dead":
             put(4, "dead", "apply dry run stopped with no end record (killed?): run it again"
-                           + (f" ({progress})" if progress else ""), dry, apply(plan, dry=True) if apply_job
-                else _rerun(dry["argv"]))
+                           + (f" ({progress})" if progress else ""), dries[0],
+                apply(plan, dry=True) if shards_job or apply_job else _rerun(dries[0]["argv"]))
 
     # 5-8: confirmed by milestones; the log says how far the step went before that
     def repack(option):
