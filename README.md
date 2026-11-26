@@ -145,7 +145,7 @@ the simulation name:
 - `ETB_JOB_QA`: QA on WORK (iteration N, N+1, or resuming a dead one);
 - `ETB_JOB_APPLY`: the fix step, `DRYRUN=1 <job>` first (the job writes the plan if needed), then `<job>`;
   also after a dead apply;
-- `ETB_JOB_COPY`: the copy, followed by the `etb copy` check.
+- `ETB_JOB_COPY`: the copy; the job ends with the `etb copy` check, which records the milestone `copied`.
 
 A site's environment script sets them, e.g. `ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh'`.
 
