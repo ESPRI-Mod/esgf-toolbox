@@ -506,8 +506,10 @@ def test_each_job_comes_with_the_same_step_without_a_job(tmp_path, monkeypatch):
         f"tb esgf-fix-tool apply {RUN_DIR}/fixplan_1.json --only-under {WORK} --workers 8 --dry-run "
         f"--fixlog {RUN_DIR}/fixlog.dry-run.jsonl")
     assert not info["go_on"]
-    lines = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output.splitlines()
-    assert lines[-1].strip().startswith("or, without a job (a short step, on the login node): tb esgf-fix-tool plan")
+    lines = [line.strip() for line in runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output.splitlines()]
+    # each command under its title, the usual one last
+    assert lines[-4:] == ["without a job (a short step, on the login node):", info["alternative"],
+                          "next, if everything is normal:", info["command"]]
 
 
 def test_a_blocked_qa_offers_to_go_on(tmp_path, monkeypatch):
@@ -521,9 +523,11 @@ def test_a_blocked_qa_offers_to_go_on(tmp_path, monkeypatch):
     info, s = steps(log)
     assert s[3]["state"] == "failed"
     assert info["go_on"] == "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
-    output = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output
-    assert ("or, if you decide to go on (your call): DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
-            in output)
+    lines = [line.strip() for line in runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output.splitlines()]
+    # going on first, the same step without a job second, the next command last
+    assert lines[-6:] == ["if you decide to go on (your call):", "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh",
+                          "without a job (a short step, on the login node):", info["alternative"],
+                          "next, if everything is normal:", info["command"]]
     # once going on: the preview recorded, the QA still ✗, the real repack next
     run_line(log, "2026-11-04", ["sh", "-c", "find $1 | xargs -0 cmip7repack -x", "_", WORK])
     info, s = steps(log)
