@@ -657,9 +657,10 @@ def _plan_progress(runs: list[dict], running: list[dict]) -> str:
     return text
 
 
-def _dry_run_summary(runs: list[dict]) -> tuple[dict, str]:
-    """What a dry run (its shards) found, per file of the plan: {"change": n, "nothing": n, "refused": n} and the main
-    reasons for refusing ('45 Unreviewed climatological time semantics · 14 ...'), from each run's own fixlog lines."""
+def _run_summary(runs: list[dict]) -> tuple[dict, str]:
+    """What an apply or its dry run (shards, resumes) did per file of the plan, the latest record of a file winning:
+    {"change": n, "nothing": n, "refused": n} and the main reasons for refusing ('45 Unreviewed climatological time
+    semantics · 14 ...'), from each run's own fixlog lines."""
     latest = {}
     for run in runs:
         for record in _fixlog_lines(run):
@@ -886,8 +887,20 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             return
         if complete:
             failures = [r for r in (list(latest.values()) if total else [whole[-1]]) if states[r["run_id"]] != "ok"]
-            put(4, "done", f"apply, fix iteration {n} ({'some files failed, they come back in QA' if failures else 'exit 0'})"
-                           f"{suffix}", last)
+            counts, reasons = _run_summary(runs)
+            if sum(counts.values()):
+                # what went well, what went wrong, file by file
+                tally = (f"{sum(counts.values())} files: changed {counts['change']} · nothing to change "
+                         f"{counts['nothing']} · failed {counts['refused']}" + (f" ({reasons})" if reasons else ""))
+                if counts["refused"]:
+                    tally += ": the failed files come back in the next QA"
+                elif failures:
+                    codes = ", ".join(sorted({str(r.get("exit_code")) for r in failures}))
+                    tally += (f" — but {len(failures)} run{'s' if len(failures) > 1 else ''} ended with exit {codes}, "
+                              "no failed file in the fixlogs: see the job logs")
+            else:  # no fixlog to read: the exit codes only
+                tally = ("some files failed, they come back in QA" if failures else "exit 0") + suffix.replace(":", ";", 1)
+            put(4, "done", f"apply, fix iteration {n} — {tally}", last)
             put(3, "next", f"QA iteration {n + 1}", last, qa(n + 1))
             return
         if sharded and not (whole and whole[-1] is last):
@@ -991,7 +1004,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                               + (f": {progress}" if progress else ""), running[0])
         elif all(dry_finished(r) for r in dries) and (not total or len(dries) == total):
             if plan and steps[4]["state"] == "next":
-                counts, reasons = _dry_run_summary(dries)
+                counts, reasons = _run_summary(dries)
                 tally = (f"{sum(counts.values())} files: would change {counts['change']} · nothing to change "
                          f"{counts['nothing']} · refused {counts['refused']}" + (f" ({reasons})" if reasons else ""))
                 if counts["refused"] and not counts["change"]:
