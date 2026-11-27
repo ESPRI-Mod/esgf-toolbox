@@ -657,6 +657,30 @@ def _plan_progress(runs: list[dict], running: list[dict]) -> str:
     return text
 
 
+def _dry_run_summary(runs: list[dict]) -> tuple[dict, str]:
+    """What a dry run (its shards) found, per file of the plan: {"change": n, "nothing": n, "refused": n} and the main
+    reasons for refusing ('45 Unreviewed climatological time semantics · 14 ...'), from each run's own fixlog lines."""
+    latest = {}
+    for run in runs:
+        for record in _fixlog_lines(run):
+            if record.get("etb_run_id") == run["run_id"] and "file" in record:
+                latest[record["file"]] = record
+    counts, reasons = {"change": 0, "nothing": 0, "refused": 0}, {}
+    for record in latest.values():
+        if record.get("status") == "failed":
+            counts["refused"] += 1
+            message = str((record.get("error") or {}).get("message") or "unknown error")
+            reason = " ".join(re.split(r"[:(]", message)[0].split()[:6])  # the kind of refusal, not the file's details
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif any(step.get("changed") for step in record.get("steps") or []):
+            counts["change"] += 1
+        else:
+            counts["nothing"] += 1
+    top = sorted(reasons.items(), key=lambda kv: -kv[1])
+    text = " · ".join(f"{n} {reason}" for reason, n in top[:3]) + (" · …" if len(top) > 3 else "")
+    return counts, text
+
+
 def _fixlog_lines(run: dict) -> list[dict]:
     argv, cwd = run["argv"], Path(run.get("cwd") or ".")
     fixlog = cwd / (argv[argv.index("--fixlog") + 1] if "--fixlog" in argv[:-1] else "fixlog.jsonl")
@@ -667,8 +691,9 @@ def _fixlog_lines(run: dict) -> list[dict]:
 
 
 def _classify_summary(run: dict) -> str:
-    """' — fixable 960/8625 · rules or fixes needed 7649/8625 · ...' from the summary esgf-fix-tool >= 0.8 writes
-    next to the report (<report>.classify.json); '' if there is none."""
+    """' — 675 blocking: rule + fix 94 · no rule 400 · rule, no fix 45 · review 90 · upstream 46', from the summary
+    esgf-fix-tool >= 0.8 writes next to the report (<report>.classify.json); '' if there is none. These are findings,
+    by what the rules say: whether a fix goes through on the files, only the dry run of step 4 tells."""
     report = next((a for a in run["argv"][2:] if a.endswith(".json") and not a.startswith("-")), None)
     if report is None:
         return ""
@@ -679,9 +704,10 @@ def _classify_summary(run: dict) -> str:
         total = blocking["findings"]
     except (OSError, ValueError, KeyError, TypeError):
         return ""
-    need = sum(blocking.get(k, 0) for k in ("unknown", "fix_missing", "review"))
-    text = f" — fixable {blocking.get('fix', 0)}/{total} · rules or fixes needed {need}/{total}"
-    text += f" · upstream {blocking['upstream']}" if blocking.get("upstream") else ""
+    parts = [f"{label} {blocking[key]}" for key, label in (
+        ("fix", "rule + fix"), ("unknown", "no rule"), ("fix_missing", "rule, no fix"), ("review", "review"),
+        ("upstream", "upstream")) if blocking.get(key)]
+    text = f" — {total} blocking" + (f": {' · '.join(parts)}" if parts else "")
     known = sum((summary.get("known_checker_errors") or {}).values())
     text += f" · known checker errors {known}" if known else ""
     text += f" · checker crashed on {summary['unknown_checker_errors']} files" if summary.get("unknown_checker_errors") else ""
@@ -965,10 +991,18 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
                               + (f": {progress}" if progress else ""), running[0])
         elif all(dry_finished(r) for r in dries) and (not total or len(dries) == total):
             if plan and steps[4]["state"] == "next":
-                would_fail = any(states[r["run_id"]] == "failed" for r in dries)
-                put(4, "next", f"fix iteration {n}: dry run done"
-                               + (f", some files would fail ({progress}): they stay for the next QA"
-                                  if would_fail else "") + ", now for real", None, apply(plan, dry=False))
+                counts, reasons = _dry_run_summary(dries)
+                tally = (f"{sum(counts.values())} files: would change {counts['change']} · nothing to change "
+                         f"{counts['nothing']} · refused {counts['refused']}" + (f" ({reasons})" if reasons else ""))
+                if counts["refused"] and not counts["change"]:
+                    # the known fixes do not go through on these files: applying would change nothing
+                    put(4, "failed", f"fix iteration {n}: dry run done, nothing would change — {tally}: "
+                                     "a decision or a rule is needed", None,
+                        f"tb0 esgf-fix-tool classify {report(n)} --show 30")
+                else:
+                    put(4, "next", f"fix iteration {n}: dry run done — {tally}"
+                                   + (": the refused files stay for the next QA" if counts["refused"] else "")
+                                   + ", now for real", None, apply(plan, dry=False))
         elif total:
             bad = next((r for r in dries if not dry_finished(r)), None)
             missing = [k for k in range(1, total + 1) if k not in {_shard(r["argv"])[0] for r in dries}]

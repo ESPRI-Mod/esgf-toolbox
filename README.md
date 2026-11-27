@@ -134,10 +134,17 @@ real command (deduplicate and apply `--dry-run`, `cmip7repack -x`, `esgdrs make 
 run, it is that run again, or a look at what failed (`classify --show 30`, the failed lines of the log).
 
 With esgf-fix-tool >= 0.8.0, the QA step also shows what `classify` said, from the summary it leaves next to the
-report (`<report>.classify.json`): `fixable 960/8625 · rules or fixes needed 7649/8625 · upstream 16 · known
-checker errors 31` (blocking findings). When the decision is `new_rule` (20), `blocked_upstream` (21) or
-`checker_error` (40), the QA step stays ✗ but the next action is the fix step: what the tool knows how to fix
-can go on meanwhile (not after `no_change` (30): the fixes did not work).
+report (`<report>.classify.json`), the blocking findings by what the rules say:
+`8625 blocking: rule + fix 960 · no rule 7619 · rule, no fix 30 · review 12 · upstream 16 · known checker errors 31`.
+"Rule + fix" only means a rule has a fix for the message: whether the fix goes through on the files, only the dry
+run of the fix step tells. When the decision is `new_rule` (20), `blocked_upstream` (21) or `checker_error` (40),
+the QA step stays ✗ but the next action is the fix step: what the tool knows how to fix can go on meanwhile (not
+after `no_change` (30): the fixes did not work).
+
+Once the dry run is done, the fix step says what it found per file of the plan, with the main reasons for refusing:
+`75 files: would change 12 · nothing to change 0 · refused 63 (45 Unreviewed climatological time semantics · …)`.
+When nothing would change (every known fix refused on its files), it does not suggest the real apply: the step is ✗,
+"a decision or a rule is needed", with `classify --show 30` to see what is left.
 
 Heavy steps can be suggested as jobs instead, so they don't run on a login node: when `$ETB_JOB_QA`,
 `$ETB_JOB_APPLY` or `$ETB_JOB_COPY` is set (inside the image), `etb todo` suggests it, with `{simu}` replaced by
