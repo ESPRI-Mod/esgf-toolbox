@@ -550,6 +550,15 @@ def test_a_running_step_gets_no_suggestion_at_all(tmp_path, monkeypatch):
     output = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output
     assert "IN PROGRESS" in output and "go on" not in output and "repack-job" not in output
 
+
+def test_a_line_separates_the_report_from_what_to_do(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    copied(log)
+    lines = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output.splitlines()
+    arrow = next(i for i, line in enumerate(lines) if line.startswith("  -> "))
+    assert set(lines[arrow - 1]) == {"-"} and len(lines[arrow - 1]) >= 40
+    assert lines[arrow - 2].lstrip().startswith(("·", "✓", "▶")) and "10 rm SRC" in lines[arrow - 2]
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)
@@ -627,8 +636,9 @@ def test_todo_detail_lists_every_step(tmp_path):
     assert out[0].startswith("SIM01") and "last milestone copied 2026-11-01" in out[0]
     assert out[1].split()[:3] == ["✓", "1", "copy"] and "copied, 3 files" in out[1]
     assert out[2].split()[:3] == ["▶", "2", "deduplicate"]
-    assert out[11] == "  -> step 2 deduplicate: dry run first"
-    assert out[12] == (f"     tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --dry-run "
+    assert set(out[11]) == {"-"}  # the report above, what to do below
+    assert out[12] == "  -> step 2 deduplicate: dry run first"
+    assert out[13] == (f"     tb esgf-fix-tool deduplicate {WORK} --only-under {WORK} --dry-run "
                        f"--fixlog {RUN_DIR}/deduplicate.preview.jsonl")
 
 

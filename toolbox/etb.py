@@ -1254,6 +1254,8 @@ def todo_command(
         for step in info["steps"]:
             typer.echo(f"  {SYMBOL[step['state']]} {step['step']} {step['name']:24} {step['date'] or '':10}  "
                        f"{step['detail']}".rstrip())
+        # the report above, what to do below
+        typer.echo("-" * max(40, min(shutil.get_terminal_size((100, 24)).columns, 160)))
         typer.echo(f"  -> {info['next']}")
         for line in _command_lines(info):
             typer.echo(f"     {line}")
