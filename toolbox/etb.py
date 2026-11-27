@@ -1173,12 +1173,18 @@ STEPS_RANGE = range(1, len(STEPS) + 1)
 
 
 def _command_lines(info: dict) -> list[str]:
-    """The command to run next, then its alternatives: the same without a job, and going on past a blocked QA."""
-    lines = [info["command"]] if info["command"] else []
-    if info.get("alternative"):
-        lines.append(f"or, without a job (a short step, on the login node): {info['alternative']}")
-    if info.get("go_on"):
-        lines.append(f"or, if you decide to go on (your call): {info['go_on']}")
+    """The commands to run, each under its title, the usual one last (the line to copy when all is normal): going
+    on past a blocked QA, then the same step without a job, then the next command. One command alone: as is."""
+    choices = [(title, info.get(key)) for title, key in (
+        ("if you decide to go on (your call):", "go_on"),
+        ("without a job (a short step, on the login node):", "alternative"),
+    ) if info.get(key)]
+    if not choices:
+        return [info["command"]] if info["command"] else []
+    lines = []
+    for title, command in [*choices, ("next, if everything is normal:", info["command"])]:
+        if command:
+            lines += [title, f"  {command}"]
     return lines
 
 

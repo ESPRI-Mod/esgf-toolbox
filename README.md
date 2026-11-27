@@ -154,12 +154,23 @@ the simulation name:
 
 A site's environment script sets them, e.g. `ETB_JOB_QA='SIMU={simu} ccc_msub -r qa-{simu} /path/qa-job.sh'`.
 
-Under a job, `etb todo` also gives the same step without a job, to run on the login node when the step is short
-(a few files: a job and its cores would take longer to get than the step itself):
-`or, without a job (a short step, on the login node): tb esgf-fix-tool plan … && tb esgf-fix-tool apply … --dry-run …`.
-When the QA is blocked (classify exit 20, 21, 40…) and the operator decides the rest can wait (files held out of
-WORK, an upstream finding), a last line gives the next step: `or, if you decide to go on (your call): <repack
-preview>`. Step 3 stays ✗ as a reminder; once something of steps 5-8 is in the log, `etb todo` follows from there.
+When there is more than one way to go on, `etb todo` puts each command under its title, the usual one last (the
+line to copy when all is normal):
+
+```text
+  -> step 4 fix: fix iteration 1: meanwhile, the fixable findings: plan + dry run, as jobs
+     if you decide to go on (your call):
+       DRYRUN=1 SIMU=… SHARDS=auto bash …/repack-job.sh
+     without a job (a short step, on the login node):
+       tb esgf-fix-tool plan …/qa_1/qa_result_*[0-9a-f].json -o …/fixplan_1.json && tb esgf-fix-tool apply … --dry-run …
+     next, if everything is normal:
+       DRYRUN=1 SIMU=… SHARDS=auto bash …/apply-job.sh
+```
+
+"Without a job": the same step on the login node, for a short step (a few files: a job and its cores would take
+longer to get than the step itself). "If you decide to go on": when the QA is blocked (classify exit 20, 21, 40…)
+and the operator decides the rest can wait (files held out of WORK, an upstream finding), the next step. Step 3 stays
+✗ as a reminder; once something of steps 5-8 is in the log, `etb todo` follows from there.
 
 While `apply` runs (or after it stopped), the fix step shows how far it got, e.g. `1240/3033 files (41%),
 3 failed, ~2.3 h left`: the files of its plan, against the lines of its fixlog that carry its own `etb_run_id`
