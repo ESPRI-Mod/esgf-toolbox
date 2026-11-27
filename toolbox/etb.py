@@ -725,12 +725,23 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     w = work or "$WORK"
     rd = str(_run_dir(work, simu)) if work else "$RUN"
     src = reached.get("copied", {}).get("src") or "$SRC"
-    steps = {i: {"step": i, "name": STEPS[i - 1], "state": "todo", "detail": "", "date": "", "command": ""}
+    steps = {i: {"step": i, "name": STEPS[i - 1], "state": "todo", "detail": "", "date": "", "command": "",
+                 "alternative": ""}
              for i in STEPS_RANGE}
+
+    # a job command -> the same step on the login node, without a job (a short step: a few files); both are shown
+    alternatives = {}
+
+    def alt(job, here):
+        """The job if the site has one (and `here` as its alternative), else `here`."""
+        if job:
+            alternatives[job] = here
+        return job or here
 
     def put(i, state, detail, source=None, command=""):
         when = (source or {}).get("start") or (source or {}).get("time") or ""
-        steps[i].update(state=state, detail=detail, date=when[:10], command=command)
+        steps[i].update(state=state, detail=detail, date=when[:10], command=command,
+                        alternative=alternatives.get(command, "") if command else "")
 
     def from_run(i, run, label, ok=None, fail=None, look=None):
         state = run_state(run, log)
@@ -764,7 +775,7 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         job = _job("COPY", simu)
         put(1, "todo", "copy SRC to WORK: the copy job (it checks the copy and records the milestone at the end)"
             if job else "copy SRC to WORK (big simulation: a parallel copy job first, then this to check)",
-            command=job or check)
+            command=alt(job, check))
     if (run := last("deduplicate", everywhere=True)[1]):
         from_run(2, run, "deduplicate", fail="deduplicate exit 1: some pairs failed, both files kept",
                  look=f"grep '\"status\": \"failed\"' {rd}/deduplicate.jsonl | tail -5")
@@ -782,7 +793,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     qa_job = _job("QA", simu)  # finds the iteration itself, resumes a cut run, then runs classify
 
     def qa(k):
-        return qa_job or f"tb esgqa {QA_TESTS} -o {rd}/qa_{k} {w}"
+        here = f"tb esgqa {QA_TESTS} -o {rd}/qa_{k} {w}"
+        return alt(qa_job, f"{here} && {classify(k)}") if qa_job else here
 
     def classify(k):
         return f"tb esgf-fix-tool classify {report(k)}" + (f" --previous {report(k - 1)}" if k > 1 else "")
@@ -792,10 +804,13 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     shards_job = _job("APPLY_SHARDS", simu)
 
     def apply(plan, dry):
-        if shards_job or apply_job:
-            return ("DRYRUN=1 " if dry else "") + (shards_job or apply_job)
-        return (f"tb esgf-fix-tool apply {plan} --only-under {w} --workers 8 "
+        here = (f"tb esgf-fix-tool apply {plan or f'{rd}/fixplan_{n}.json'} --only-under {w} --workers 8 "
                 + (f"--dry-run --fixlog {rd}/fixlog.dry-run.jsonl" if dry else f"--fixlog {rd}/fixlog.jsonl"))
+        if plan is None:  # the job writes the plan first
+            here = f"tb esgf-fix-tool plan {report(n)} -o {rd}/fixplan_{n}.json && {here}"
+        if shards_job or apply_job:
+            return alt(("DRYRUN=1 " if dry else "") + (shards_job or apply_job), here)
+        return here
 
     put(3, "todo", "QA iteration 1" + ("" if qa_job else " (big simulation: better as a job)"), command=qa(1))
     def shard_command(k, total, plan_path):
@@ -1034,10 +1049,10 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     elif tries and (group := repack_group(tries))[1] and (pending := repack_shards_state(*group, preview=True)):
         put(5, *pending[:3], command=pending[3])
     elif tries and (group[1] or previewed("repack")):
-        put(5, "todo", "preview done: now for real, in place (-o)", command=repack_shards or repack_job or repack("-o"))
+        put(5, "todo", "preview done: now for real, in place (-o)", command=alt(repack_shards or repack_job, repack("-o")))
     else:
         put(5, "todo", "preview first (-x)" + (", as jobs" if repack_shards else ""),
-            command=f"DRYRUN=1 {repack_shards}" if repack_shards else repack("-x"))
+            command=alt(f"DRYRUN=1 {repack_shards}" if repack_shards else "", repack("-x")))
     if "linked" in reached:
         put(6, "done", f"milestone linked {reached['linked'].get('note') or ''}".strip(), reached["linked"])
     elif (run := last("drs")[1]):
@@ -1070,7 +1085,9 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         put(7, "failed", f"classify --final exit {code}, {DECISIONS.get(code, 'error')}{_classify_summary(run)}", run,
             f"tb0 esgf-fix-tool classify {final} --final --show 30")
     else:
-        put(7, "todo", "final QA on the DRS", command=final_job or f"tb esgqa {QA_TESTS} -b /files/ -o {rd}/qa_final $DRS_SIMU")
+        put(7, "todo", "final QA on the DRS", command=alt(final_job, f"tb esgqa {QA_TESTS} -b /files/ -o {rd}/qa_final $DRS_SIMU"
+                                                          + (f" && tb esgf-fix-tool classify {rd}/qa_final/qa_result_*[0-9a-f].json --final"
+                                                             if final_job else "")))
     # 8 mapfiles: one per dataset, flat in WORK/Mapfiles, for the publication
     mapdir = f"{w}/Mapfiles"
     mapfile_job = _job("MAPFILE", simu)
@@ -1081,8 +1098,8 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             steps[8]["command"] = mapfile_job
     else:
         put(8, "todo", f"one mapfile per dataset, flat in {mapdir} (checksums: better as a job)",
-            command=mapfile_job or f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {mapdir} "
-                                   f"--max-processes 8")
+            command=alt(mapfile_job, f"tb esgmapfile make -p $PROJECT --directory $DRS_SIMU --outdir {mapdir} "
+                                     f"--max-processes 8"))
     # 9 publication: from the ESGF VM, outside the image
     if "published" in reached:
         put(9, "done", "milestone published", reached["published"])
@@ -1113,12 +1130,17 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
     active = [i for i in STEPS_RANGE if steps[i]["state"] in ("running", "dead")]
     current = active[-1] if active else next(
         (i for i in STEPS_RANGE if steps[i]["state"] not in ("done", "skipped")), None)
-    if current == 3 and steps[3]["state"] == "failed" and steps[4]["state"] in ("next", "failed"):
+    # the operator went on past a blocked QA (something of steps 5-8 in the log): follow them, step 3 stays ✗
+    went_on = any(k in ("repack", "drs", "final-qa", "final-classify", "mapfile") and start >= window
+                  for k, _, start in found + previews) or any(m in reached for m in ("fixed", "linked"))
+    if current in (3, 4) and steps[3]["state"] == "failed" and went_on:
+        current = next((i for i in range(5, len(STEPS) + 1) if steps[i]["state"] not in ("done", "skipped")), None)
+    elif current == 3 and steps[3]["state"] == "failed" and steps[4]["state"] in ("next", "failed"):
         current = 4  # QA blocked on what needs a rule, a fix or a checker: the known fixes go on meanwhile
     for i in STEPS_RANGE:  # one ▶ only: the current step
         if i != current and steps[i]["state"] == "next":
             steps[i]["state"] = "todo"
-    command = ""
+    command = alternative = go_on = ""
     if abandoned:
         category = "abandoned"
         next_action = f"abandoned {abandoned['time'][:10]}" + (f": {abandoned['note']}" if abandoned.get("note") else "")
@@ -1130,9 +1152,15 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
         category = "later" if steps[current]["state"] == "waiting" else "current"
         next_action = f"step {current} {STEPS[current - 1]}: {steps[current]['detail']}"
         command = steps[current]["command"]
+        alternative = steps[current]["alternative"]
+        # the QA blocked (exit 20, 21, 40...): the operator may decide the rest can wait (held files, an upstream
+        # finding) and go on; step 3 stays ✗ as a reminder
+        if steps[3]["state"] == "failed" and current in (3, 4) and steps[5]["state"] in ("todo", "next"):
+            go_on = steps[5]["command"]
     latest = max(reached.values(), key=lambda r: r["time"], default={})
     reset = resets[-1] if resets else None
     return {"simu": simu, "category": category, "current": current, "next": next_action, "command": command,
+            "alternative": alternative, "go_on": go_on,
             "milestone": latest.get("milestone"), "since": latest.get("time", "")[:10],
             "src": reached.get("copied", {}).get("src"),
             "src_removable_from": removable.isoformat() if removable else None,
@@ -1142,6 +1170,16 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
 
 
 STEPS_RANGE = range(1, len(STEPS) + 1)
+
+
+def _command_lines(info: dict) -> list[str]:
+    """The command to run next, then its alternatives: the same without a job, and going on past a blocked QA."""
+    lines = [info["command"]] if info["command"] else []
+    if info.get("alternative"):
+        lines.append(f"or, without a job (a short step, on the login node): {info['alternative']}")
+    if info.get("go_on"):
+        lines.append(f"or, if you decide to go on (your call): {info['go_on']}")
+    return lines
 
 
 def _reset_text(reset: dict | None) -> str | None:
@@ -1207,8 +1245,8 @@ def todo_command(
             typer.echo(f"  {SYMBOL[step['state']]} {step['step']} {step['name']:24} {step['date'] or '':10}  "
                        f"{step['detail']}".rstrip())
         typer.echo(f"  -> {info['next']}")
-        if info["command"]:
-            typer.echo(f"     {info['command']}")
+        for line in _command_lines(info):
+            typer.echo(f"     {line}")
         for warning in info["warnings"]:
             typer.echo(f"  warning: {warning}")
         return
@@ -1217,8 +1255,8 @@ def todo_command(
     for info in infos:
         strip = "".join(SYMBOL[step["state"]] for step in info["steps"])
         typer.echo(f"{info['simu']:32} {strip}  {info['next']}")
-        if info["command"]:
-            typer.echo(f"{'':33}{info['command']}")
+        for line in _command_lines(info):
+            typer.echo(f"{'':33}{line}")
         for warning in info["warnings"]:
             typer.echo(f"{'':32} warning: {warning}")
     waiting = sum(i["category"] == "later" for i in hidden)

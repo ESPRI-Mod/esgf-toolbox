@@ -480,6 +480,57 @@ def test_a_killed_repack_preview_shard_is_run_again(tmp_path, monkeypatch):
     assert s[5]["state"] == "dead" and "shard 1/3 stopped" in s[5]["detail"]
     assert info["command"] == "DRYRUN=1 SHARD=1/3 SIMU=SIM01 ccc_msub /s/repack-job.sh"
 
+
+JOBS = {"ETB_JOB_QA": "SIMU={simu} ccc_msub /s/qa-job.sh", "ETB_JOB_APPLY": "SIMU={simu} ccc_msub /s/apply-job.sh",
+        "ETB_JOB_APPLY_SHARDS": "SIMU={simu} SHARDS=auto bash /s/apply-job.sh",
+        "ETB_JOB_REPACK": "SIMU={simu} ccc_msub /s/repack-job.sh",
+        "ETB_JOB_REPACK_SHARDS": "SIMU={simu} SHARDS=auto bash /s/repack-job.sh"}
+
+
+def test_each_job_comes_with_the_same_step_without_a_job(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    for name, value in JOBS.items():
+        monkeypatch.setenv(name, value)
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    info = todo_json(log, "SIM01")
+    assert info["command"] == "SIMU=SIM01 ccc_msub /s/qa-job.sh"
+    assert info["alternative"] == (f"tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o {RUN_DIR}/qa_1 {WORK} && "
+                                   f"tb esgf-fix-tool classify {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json")
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_1", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"], exit_code=10)
+    info = todo_json(log, "SIM01")
+    assert info["command"] == "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
+    assert info["alternative"] == (
+        f"tb esgf-fix-tool plan {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json -o {RUN_DIR}/fixplan_1.json && "
+        f"tb esgf-fix-tool apply {RUN_DIR}/fixplan_1.json --only-under {WORK} --workers 8 --dry-run "
+        f"--fixlog {RUN_DIR}/fixlog.dry-run.jsonl")
+    assert not info["go_on"]
+    lines = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output.splitlines()
+    assert lines[-1].strip().startswith("or, without a job (a short step, on the login node): tb esgf-fix-tool plan")
+
+
+def test_a_blocked_qa_offers_to_go_on(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    for name, value in JOBS.items():
+        monkeypatch.setenv(name, value)
+    copied(log)
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "deduplicate", WORK, "--only-under", WORK])
+    run_line(log, "2026-11-03", ["esgqa", "-o", f"{RUN_DIR}/qa_3", WORK])
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_3/r.json"], exit_code=20)
+    info, s = steps(log)
+    assert s[3]["state"] == "failed"
+    assert info["go_on"] == "DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
+    output = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output
+    assert ("or, if you decide to go on (your call): DRYRUN=1 SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
+            in output)
+    # once going on: the preview recorded, the QA still ✗, the real repack next
+    run_line(log, "2026-11-04", ["sh", "-c", "find $1 | xargs -0 cmip7repack -x", "_", WORK])
+    info, s = steps(log)
+    assert s[3]["state"] == "failed" and info["current"] == 5 and not info["go_on"]
+    assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
+    assert info["alternative"].startswith("tb sh -c 'find")
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)
