@@ -923,11 +923,13 @@ def sharded_iteration(tmp_path, log, total=4):
     return str(plan)
 
 
-def shard_run(log, tmp_path, plan, k, total, files, *, run_id, exit_code=0, ended=True, heartbeat_age=None):
+def shard_run(log, tmp_path, plan, k, total, files, *, run_id, exit_code=0, ended=True, heartbeat_age=None, failed=()):
     fixlog = tmp_path / f"fixlog.shard-{k}.jsonl"
     with fixlog.open("a") as out:
         for f in files:
-            out.write(json.dumps({"etb_run_id": run_id, "file": f, "status": "done"}) + "\n")
+            out.write(json.dumps({"etb_run_id": run_id, "file": f, **(
+                {"status": "failed", "error": {"message": "Unreviewed cell_methods for temperature ta: 'x'"}}
+                if f in failed else {"status": "done", "steps": [{"changed": True}]})}) + "\n")
     argv = ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--shard", f"{k}/{total}", "--fixlog", str(fixlog)]
     if ended:
         run_line(log, "2026-11-03", argv, exit_code=exit_code, run_id=run_id)
@@ -948,7 +950,8 @@ def test_todo_waits_for_every_shard_then_suggests_the_next_qa(tmp_path, monkeypa
     assert s[4]["state"] == "running" and "shard 2/2 running" in s[4]["detail"] and "3/4 files (75%)" in s[4]["detail"]
     shard_run(log, tmp_path, plan, 2, 2, ["/f3.nc"], run_id="s2b")
     info, s = steps(log)
-    assert s[4]["state"] == "done" and "4/4 files (100%)" in s[4]["detail"] and s[3]["state"] == "next"
+    assert s[4]["state"] == "done" and s[3]["state"] == "next"
+    assert s[4]["detail"] == "apply, fix iteration 1 — 4 files: changed 4 · nothing to change 0 · failed 0"
     assert info["command"].startswith("tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o " + f"{RUN_DIR}/qa_2")
 
 
@@ -1089,10 +1092,12 @@ def test_no_change_stays_on_the_qa_step(tmp_path):
 def test_shards_that_ended_with_failed_files_finish_the_iteration(tmp_path):
     log = tmp_path / "runs.jsonl"
     plan = sharded_iteration(tmp_path, log)
-    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="s1", exit_code=1)   # a file failed
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="s1", exit_code=1, failed={"/f2.nc"})
     shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
     info, s = steps(log)
-    assert s[4]["state"] == "done" and "some files failed, they come back in QA" in s[4]["detail"]
+    assert s[4]["state"] == "done" and s[4]["detail"] == (
+        "apply, fix iteration 1 — 4 files: changed 3 · nothing to change 0 · failed 1 (1 Unreviewed cell_methods for "
+        "temperature ta): the failed files come back in the next QA")
     assert s[3]["state"] == "next" and info["command"].startswith(f"tb esgqa -t wcrp_cmip7:1.0 -t cf:1.11 -o {RUN_DIR}/qa_2")
 
 
@@ -1157,3 +1162,15 @@ def test_mapfiles_after_the_final_gate_as_a_job_and_counted(tmp_path, monkeypatc
     run_line(log, "2026-11-06", ["esgmapfile", "make", "-p", "cmip7", "--outdir", str(work / "Mapfiles")])
     info, s = steps(log)
     assert s[8]["state"] == "done" and s[8]["detail"] == f"2 mapfiles in {work}/Mapfiles" and info["current"] == 9
+
+
+def test_a_non_zero_exit_without_failed_file_is_said_so(tmp_path):
+    """1pctCO2: shards ended non-zero while every file was done: not "some files failed"."""
+    log = tmp_path / "runs.jsonl"
+    plan = sharded_iteration(tmp_path, log)
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="s1", exit_code=1)
+    shard_run(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="s2")
+    _, s = steps(log)
+    assert s[4]["detail"] == ("apply, fix iteration 1 — 4 files: changed 4 · nothing to change 0 · failed 0 — but 1 run "
+                              "ended with exit 1, no failed file in the fixlogs: see the job logs")
+

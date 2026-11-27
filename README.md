@@ -181,7 +181,11 @@ and the operator decides the rest can wait (files held out of WORK, an upstream 
 
 While `apply` runs (or after it stopped), the fix step shows how far it got, e.g. `1240/3033 files (41%),
 3 failed, ~2.3 h left`: the files of its plan, against the lines of its fixlog that carry its own `etb_run_id`
-(so a resubmitted run does not count the lines of an earlier one). Same for a dry run.
+(so a resubmitted run does not count the lines of an earlier one). Same for a dry run. Once it is done, what
+went well and what went wrong, file by file: `3034 files: changed 2980 · nothing to change 40 · failed 14 (14
+Unreviewed cell_methods for temperature …): the failed files come back in the next QA`. A run that ended non-zero
+while no file failed in the fixlogs is said so (`— but 1 run ended with exit 1, no failed file in the fixlogs: see
+the job logs`), rather than "some files failed".
 
 With esgf-fix-tool >= 0.7.0, a plan can be finished with `apply --resume` or split over K jobs with `--shard k/K`.
 `etb todo` takes every apply run of the fix iteration together: the progress adds up the shards and resumes
