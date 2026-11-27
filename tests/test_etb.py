@@ -559,6 +559,31 @@ def test_a_line_separates_the_report_from_what_to_do(tmp_path):
     assert set(lines[arrow - 1]) == {"-"} and len(lines[arrow - 1]) >= 40
     assert lines[arrow - 2].lstrip().startswith(("·", "✓", "▶")) and "10 rm SRC" in lines[arrow - 2]
 
+
+def test_a_dry_run_that_would_change_nothing_asks_for_a_decision(tmp_path, monkeypatch):
+    """amip iteration 4: every known fix refused on its files; applying would change nothing."""
+    log = tmp_path / "runs.jsonl"
+    for name, value in JOBS.items():
+        monkeypatch.setenv(name, value)
+    plan = sharded_iteration(tmp_path, log)
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
+    fixlog = tmp_path / "fixlog.dry-run.jsonl"
+    reasons = ["Unreviewed climatological time semantics"] * 2 + ["Unreviewed cell_methods for temperature ta: 'x'"]
+    records = [{"etb_run_id": "d1", "file": f"/f{i}.nc", "status": "failed", "dry_run": True,
+                "error": {"message": m}} for i, m in enumerate(reasons)]
+    records.append({"etb_run_id": "d1", "file": "/f3.nc", "status": "done", "dry_run": True,
+                    "steps": [{"changed": False}]})
+    fixlog.write_text("".join(json.dumps(r) + "\n" for r in records))
+    run_line(log, "2026-11-03", ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--dry-run",
+                                 "--fixlog", str(fixlog)], exit_code=1, run_id="d1")
+    info, s = steps(log)
+    assert s[4]["state"] == "failed"
+    assert s[4]["detail"] == ("fix iteration 1: dry run done, nothing would change — 4 files: would change 0 · "
+                              "nothing to change 1 · refused 3 (2 Unreviewed climatological time semantics · "
+                              "1 Unreviewed cell_methods for temperature ta): a decision or a rule is needed")
+    assert info["command"] == f"tb0 esgf-fix-tool classify {RUN_DIR}/qa_1/qa_result_*[0-9a-f].json --show 30"
+    assert "apply-job" not in info["command"] and not info["alternative"]
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)
@@ -933,7 +958,8 @@ def dry_shard(log, tmp_path, plan, k, total, files, *, run_id, exit_code=0, ende
     with fixlog.open("a") as out:
         for f in files:
             out.write(json.dumps({"etb_run_id": run_id, "file": f, "dry_run": True,
-                                  "status": "failed" if f in failed else "done"}) + "\n")
+                                  **({"status": "failed", "error": {"message": "Unreviewed time semantics"}}
+                                     if f in failed else {"status": "done", "steps": [{"changed": True}]})}) + "\n")
     argv = ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--workers", "16", "--shard", f"{k}/{total}",
             "--dry-run", "--fixlog", str(fixlog)]
     if ended:
@@ -957,7 +983,7 @@ def test_todo_suggests_the_shard_launcher_for_the_dry_run_and_the_real_apply(tmp
     dry_shard(log, tmp_path, plan, 1, 2, ["/f0.nc", "/f2.nc"], run_id="d1")
     dry_shard(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="d2")
     info, s = steps(log)
-    assert s[4]["state"] == "next" and "dry run done, now for real" in s[4]["detail"]
+    assert s[4]["state"] == "next" and "dry run done — 4 files: would change 4 · nothing to change 0 · refused 0, now for real" in s[4]["detail"]
     assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
 
 
@@ -980,7 +1006,8 @@ def test_todo_waits_for_every_dry_run_shard(tmp_path, monkeypatch):
     # done, with files that would fail (exit 1): on to the real apply
     dry_shard(log, tmp_path, plan, 2, 2, ["/f1.nc", "/f3.nc"], run_id="d2c", exit_code=1, failed={"/f3.nc"})
     info, s = steps(log)
-    assert s[4]["state"] == "next" and "some files would fail (4/4 files (100%), 1 failed)" in s[4]["detail"]
+    assert s[4]["state"] == "next" and ("4 files: would change 3 · nothing to change 0 · refused 1 (1 Unreviewed time "
+                                        "semantics): the refused files stay for the next QA, now for real") in s[4]["detail"]
     assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/apply-job.sh"
 
 
@@ -1036,8 +1063,8 @@ def test_the_qa_step_shows_the_classify_summary(tmp_path):
     log = tmp_path / "runs.jsonl"
     classified(tmp_path, log, 10, SUMMARY)
     _, s = steps(log)
-    assert s[3]["detail"] == ("iteration 1: classify exit 10 (known) — fixable 960/8625 · rules or fixes needed "
-                              "7649/8625 · upstream 16 · known checker errors 31")
+    assert s[3]["detail"] == ("iteration 1: classify exit 10 (known) — 8625 blocking: rule + fix 960 · no rule 7619 · "
+                              "rule, no fix 30 · upstream 16 · known checker errors 31")
 
 
 @pytest.mark.parametrize("code", [20, 40])
@@ -1084,11 +1111,11 @@ def test_a_dry_run_with_failing_files_moves_on_to_the_real_run(tmp_path):
     run_line(log, "2026-11-03", ["esgf-fix-tool", "plan", f"{RUN_DIR}/qa_1/r.json", "-o", plan])
     fixlog = tmp_path / "fixlog.dry-run.jsonl"
     fixlog.write_text("".join(json.dumps({"etb_run_id": "d1", "file": f"/f{i}.nc", "status": "failed" if i < 2
-                                          else "done", "dry_run": True}) + "\n" for i in range(4)))
+                                          else "done", "steps": [{"changed": True}], "dry_run": True}) + "\n" for i in range(4)))
     run_line(log, "2026-11-03", ["esgf-fix-tool", "apply", plan, "--only-under", WORK, "--dry-run",
                                  "--fixlog", str(fixlog)], exit_code=1, run_id="d1")
     info, s = steps(log)
-    assert s[4]["state"] == "next" and "dry run done, some files would fail (4/4 files (100%), 2 failed)" in s[4]["detail"]
+    assert s[4]["state"] == "next" and "4 files: would change 2 · nothing to change 0 · refused 2 (2 unknown error)" in s[4]["detail"]
     assert "--dry-run" not in info["command"] and info["command"].startswith(f"tb esgf-fix-tool apply {plan}")
 
 
