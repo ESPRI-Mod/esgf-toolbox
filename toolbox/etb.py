@@ -1151,12 +1151,16 @@ def steps_of(simu: str, records: list[dict], runs: list[dict], log: Path, months
             steps[current]["state"] = "next"
         category = "later" if steps[current]["state"] == "waiting" else "current"
         next_action = f"step {current} {STEPS[current - 1]}: {steps[current]['detail']}"
-        command = steps[current]["command"]
-        alternative = steps[current]["alternative"]
-        # the QA blocked (exit 20, 21, 40...): the operator may decide the rest can wait (held files, an upstream
-        # finding) and go on; step 3 stays ✗ as a reminder
-        if steps[3]["state"] == "failed" and current in (3, 4) and steps[5]["state"] in ("todo", "next"):
-            go_on = steps[5]["command"]
+        if steps[current]["state"] == "running":
+            # something is running: no command at all (not even going on), only wait for it
+            next_action = f"IN PROGRESS — {next_action}"
+        else:
+            command = steps[current]["command"]
+            alternative = steps[current]["alternative"]
+            # the QA blocked (exit 20, 21, 40...): the operator may decide the rest can wait (held files, an
+            # upstream finding) and go on; step 3 stays ✗ as a reminder
+            if steps[3]["state"] == "failed" and current in (3, 4) and steps[5]["state"] in ("todo", "next"):
+                go_on = steps[5]["command"]
     latest = max(reached.values(), key=lambda r: r["time"], default={})
     reset = resets[-1] if resets else None
     return {"simu": simu, "category": category, "current": current, "next": next_action, "command": command,

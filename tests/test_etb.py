@@ -535,6 +535,21 @@ def test_a_blocked_qa_offers_to_go_on(tmp_path, monkeypatch):
     assert info["command"] == "SIMU=SIM01 SHARDS=auto bash /s/repack-job.sh"
     assert info["alternative"].startswith("tb sh -c 'find")
 
+
+def test_a_running_step_gets_no_suggestion_at_all(tmp_path, monkeypatch):
+    log = tmp_path / "runs.jsonl"
+    for name, value in JOBS.items():
+        monkeypatch.setenv(name, value)
+    plan = sharded_iteration(tmp_path, log)
+    # a blocked QA (exit 20) whose known fixes are being applied: no "go on", no command, IN PROGRESS
+    run_line(log, "2026-11-02", ["esgf-fix-tool", "classify", f"{RUN_DIR}/qa_1/r.json"], exit_code=20)
+    shard_run(log, tmp_path, plan, 1, 2, ["/f0.nc"], run_id="s1", ended=False, heartbeat_age=10)
+    info, s = steps(log)
+    assert s[4]["state"] == "running" and info["next"].startswith("IN PROGRESS — step 4 fix: apply")
+    assert not info["command"] and not info["alternative"] and not info["go_on"]
+    output = runner.invoke(etb.app, ["todo", "SIM01", "--log", str(log)]).output
+    assert "IN PROGRESS" in output and "go on" not in output and "repack-job" not in output
+
 def test_todo_shows_a_blocking_decision_and_a_move_without_link(tmp_path):
     log = tmp_path / "runs.jsonl"
     copied(log)
